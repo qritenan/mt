@@ -23,5 +23,10 @@ struct DeviceStatus {
 // Queries every supported device. Blocking (can take a second or two); call from a worker thread.
 std::vector<DeviceStatus> PollAllDevices();
 
+// How long the first poll waits to hear the Armor X over Bluetooth (only --list sets it).
+extern int g_armorxFirstWaitMs;
+// Called from a Bluetooth thread the first time the Armor X is heard, so the tray can poll at once.
+extern void (*g_armorxHeard)();
+
 // Prints every HID collection (for adding support for new devices).
 std::wstring DumpHidCollections();

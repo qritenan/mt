@@ -17,6 +17,7 @@
 #include "drivers.h"
 
 #include <algorithm>
+#include <map>
 
 namespace {
 
@@ -74,6 +75,8 @@ std::wstring CleanName(std::wstring n, USHORT vid, USHORT pid) {
 
 void PollKysona(PollContext& ctx) {
     std::vector<std::wstring> seenNames;
+    std::map<std::wstring, DeviceStatus> live, off;  // off: answered "not connected" this poll
+    static std::map<std::wstring, DeviceStatus> lastLive;
     for (USHORT vendor : { (USHORT)0x3554, (USHORT)0x373B, (USHORT)0x3770, (USHORT)0x33E4, (USHORT)0x3710, (USHORT)0x35BB }) {
         for (auto [vid, pid] : ctx.Products(vendor)) {
             // ATK N9 Pro / N9 Ultra headsets speak a serial protocol (atk_serial.cpp); never send
@@ -109,16 +112,19 @@ void PollKysona(PollContext& ctx) {
                     s.asleep = true;  // the receiver says online but the mouse did not answer: keep the last value
                 }
                 if (!answered) continue;
-                if (!s.connected) {
-                    ctx.Claim(vid, pid);
-                    break;
-                }
                 s.key = L"kysona:" + Hex4(vid) + L":" + Hex4(pid);
                 s.name = CleanName(HidProduct(*c), vid, pid);
                 s.kind = KindFromCollections(ctx.colls, vid, pid);
                 if (s.kind == DeviceKind::Other) s.kind = DeviceKind::Mouse;
                 s.via = IsCable(vid, pid) ? L"USB cable" : L"2.4 GHz receiver";
                 s.graceSec = 1800;
+                // The dongle also says "not connected" while the mouse sleeps. Report nothing, so the
+                // tray keeps the last value dimmed for graceSec instead of hiding the mouse.
+                if (!s.connected) {
+                    ctx.Claim(vid, pid);
+                    off[s.key] = s;
+                    break;  // the other collections of this receiver would say the same
+                }
                 // A mouse plugged in for charging can show up twice (cable + dongle); keep one.
                 bool dup = false;
                 for (auto& n : seenNames) dup |= n == s.name;
@@ -129,9 +135,24 @@ void PollKysona(PollContext& ctx) {
                 } else {
                     seenNames.push_back(s.name);
                     ctx.Add(s, vid, pid);
+                    live[s.key] = s;
                 }
                 break;
             }
         }
     }
+    // A mouse moved between dongle and cable answers under two ids with different names (SCYROX 8K
+    // dongle, SCYROX V6 cable). While a Kysona device is live, hide the silent ones instead of
+    // holding them dimmed as asleep. shortcut: also hides a second, sleeping Kysona mouse.
+    if (live.empty()) return;
+    for (auto& [key, s] : lastLive)
+        if (!live.count(key)) off.emplace(key, s);
+    for (auto& [key, s] : off) {
+        if (live.count(key)) continue;
+        s.connected = false;
+        s.percent = -1;
+        s.charging = false;
+        ctx.out.push_back(s);
+    }
+    lastLive = live;
 }

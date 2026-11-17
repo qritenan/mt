@@ -71,6 +71,7 @@ int PollWgi(PollContext& ctx, int& thirdParty) {
         UINT16 vid = 0, pid = 0;
         raw->get_HardwareVendorId(&vid);
         raw->get_HardwareProductId(&pid);
+        if (ctx.IsClaimed(vid, pid)) { Release(raw); continue; }
         IGameControllerBatteryInfo* info = nullptr;
         IBatteryReport* report = nullptr;
         if (WgiVendor(vid) && SUCCEEDED(raw->QueryInterface(__uuidof(IGameControllerBatteryInfo), (void**)&info)) && info &&

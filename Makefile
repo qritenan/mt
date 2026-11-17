@@ -2,7 +2,10 @@
 CXX      ?= g++
 WINDRES  ?= windres
 CXXFLAGS ?= -std=c++17 -Os -Wall -Wno-missing-field-initializers -ffunction-sections -fdata-sections \
-            -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00
+            -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 \
+            -D____FIReference_1_boolean_INTERFACE_DEFINED__
+# The last define skips IReference<boolean>: newer mingw-w64 headers define it twice (boolean and BYTE
+# are both unsigned char). Nothing here uses it.
 LDFLAGS  ?= -municode -mwindows -static -s -Wl,--gc-sections
 LIBS     := -lhid -lsetupapi -lcfgmgr32 -lole32 -loleaut32 -lcomctl32 -lgdi32 -lruntimeobject -lws2_32
 
@@ -43,5 +46,7 @@ test:
 	./build/galaxy_buds_protocol_test.exe
 	$(CXX) -std=c++17 -O2 -Wall tests/logitech_g435_0adf_test.cpp -o build/logitech_g435_0adf_test.exe
 	./build/logitech_g435_0adf_test.exe
+	$(CXX) -std=c++17 -O2 -Wall tests/armorx_trend_test.cpp -o build/armorx_trend_test.exe
+	./build/armorx_trend_test.exe
 
 .PHONY: clean test

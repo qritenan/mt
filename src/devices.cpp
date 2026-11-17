@@ -95,6 +95,7 @@ std::vector<DeviceStatus> PollAllDevices() {
     PollHeadsetControl(ctx);
     PollBluetooth(ctx);   // before the generic HID check: Windows' own level wins for the same device
     PollGenericHid(ctx);
+    PollArmorX(ctx);  // claims the dongle id so the Xbox fallback skips its fake "Full"
     PollXInput(ctx);
     return ctx.out;
 }

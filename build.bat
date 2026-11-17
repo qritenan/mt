@@ -8,7 +8,7 @@ windres -i res\app.rc -o build\app_res.o --include-dir res || exit /b 1
 set SOURCES=
 for %%f in (src\*.cpp src\drivers\*.cpp) do set SOURCES=!SOURCES! %%f
 g++ -std=c++17 -Os -municode -mwindows -static -s -ffunction-sections -fdata-sections -Wl,--gc-sections ^
-    -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -Wall -Wno-missing-field-initializers ^
+    -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -D____FIReference_1_boolean_INTERFACE_DEFINED__ -Wall -Wno-missing-field-initializers ^
     !SOURCES! ^
     build\app_res.o -o WirelessBattery.exe ^
     -lhid -lsetupapi -lcfgmgr32 -lole32 -loleaut32 -lcomctl32 -lgdi32 -lruntimeobject -lws2_32 || exit /b 1
