@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "devices.h"
+#include "text.h"
 #include "widget.h"
 
 namespace {
@@ -141,9 +142,8 @@ void SetAutostart(bool on) {
 }
 
 // ---- icon rendering ---------------------------------------------------------------------------
-// Draws the percentage as large digits with a small level bar underneath. GDI text is rendered
-// white-on-black into a scratch bitmap and its brightness is used as the alpha channel, which
-// gives smooth edges on the transparent icon.
+// Draws the percentage as large digits with a small level bar underneath. The digits come from
+// RenderText() as a coverage mask that is used as the alpha channel of the transparent icon.
 
 struct Rgb { BYTE r, g, b; };
 
@@ -154,46 +154,16 @@ HICON RenderIcon(const std::wstring& text, int barPct, Rgb textColor, Rgb barCol
     const int barH = std::max(2, S / 8);
     const int textH = S - barH - 1;
 
-    HDC dc = CreateCompatibleDC(nullptr);
-    BITMAPINFO bi{};
-    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-
-    // scratch bitmap for the glyphs
-    const int W = S * 3, H = S * 2;
-    bi.bmiHeader.biWidth = W;
-    bi.bmiHeader.biHeight = -H;
-    void* sbits = nullptr;
-    HBITMAP scratch = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &sbits, nullptr, 0);
-    HGDIOBJ oldBmp = SelectObject(dc, scratch);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(255, 255, 255));
-    auto* sp = static_cast<DWORD*>(sbits);
-
-    int bx0 = 0, by0 = 0, bx1 = -1, by1 = -1;
+    // largest font size whose digits fit above the level bar
+    TextMask glyphs;
     for (int fh = textH * 2; fh >= 6; fh--) {
-        HFONT f = CreateFontW(-fh, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                              ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-        HGDIOBJ oldF = SelectObject(dc, f);
-        SetTextCharacterExtra(dc, text.size() >= 3 ? -1 : 0);
-        memset(sbits, 0, (size_t)W * H * 4);
-        TextOutW(dc, 2, 0, text.c_str(), (int)text.size());
-        GdiFlush();
-        SelectObject(dc, oldF);
-        DeleteObject(f);
-        bx0 = W; by0 = H; bx1 = -1; by1 = -1;
-        for (int y = 0; y < H; y++)
-            for (int x = 0; x < W; x++)
-                if (sp[y * W + x] & 0xFF) { bx0 = std::min(bx0, x); bx1 = std::max(bx1, x); by0 = std::min(by0, y); by1 = std::max(by1, y); }
-        if (bx1 < 0) break;
-        if (bx1 - bx0 + 1 <= S && by1 - by0 + 1 <= textH) break;
+        glyphs = RenderText(text, L"Segoe UI", L"Segoe UI", fh, FW_BOLD, text.size() >= 3 ? -1 : 0);
+        if (glyphs.w == 0 || (glyphs.w <= S && glyphs.h <= textH)) break;
     }
 
-    // final icon bitmap
-    bi.bmiHeader.biWidth = S;
-    bi.bmiHeader.biHeight = -S;
+    HDC dc = CreateCompatibleDC(nullptr);
+    BITMAPINFO bi{};
+    bi.bmiHeader = { sizeof(BITMAPINFOHEADER), S, -S, 1, 32, BI_RGB };
     void* ibits = nullptr;
     HBITMAP color = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &ibits, nullptr, 0);
     auto* ip = static_cast<DWORD*>(ibits);
@@ -204,12 +174,10 @@ HICON RenderIcon(const std::wstring& text, int barPct, Rgb textColor, Rgb barCol
         a = a * alphaScale / 255;
         ip[y * S + x] = ((DWORD)a << 24) | ((DWORD)c.r << 16) | ((DWORD)c.g << 8) | c.b;  // straight alpha
     };
-    if (bx1 >= 0) {
-        int gw = bx1 - bx0 + 1, gh = by1 - by0 + 1;
-        int ox = (S - gw) / 2, oy = (textH - gh) / 2;
-        for (int y = 0; y < gh; y++)
-            for (int x = 0; x < gw; x++)
-                put(ox + x, oy + y, textColor, sp[(by0 + y) * W + (bx0 + x)] & 0xFF);
+    if (glyphs.w > 0) {
+        int ox = (S - glyphs.w) / 2, oy = (textH - glyphs.h) / 2;
+        for (int y = 0; y < glyphs.h; y++)
+            for (int x = 0; x < glyphs.w; x++) put(ox + x, oy + y, textColor, glyphs.a[y * glyphs.w + x]);
     }
     // level bar: faint track + filled part
     int fill = barPct < 0 ? 0 : std::max(barPct > 0 ? 1 : 0, (barPct * S + 50) / 100);
@@ -219,8 +187,6 @@ HICON RenderIcon(const std::wstring& text, int barPct, Rgb textColor, Rgb barCol
             else put(x, y, g_lightTaskbar ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 }, 70);
         }
 
-    SelectObject(dc, oldBmp);
-    DeleteObject(scratch);
     DeleteDC(dc);
 
     HBITMAP mask = CreateBitmap(S, S, 1, 1, nullptr);

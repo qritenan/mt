@@ -1,7 +1,7 @@
 #include "widget.h"
+#include "text.h"
 
 #include <commctrl.h>
-#include <algorithm>
 
 namespace {
 
@@ -34,64 +34,10 @@ wchar_t Glyph(DeviceKind k, bool bluetooth) {
 constexpr wchar_t kBolt = 0xE945;            // LightningBolt
 constexpr wchar_t kBatteryUnknown = 0xE996;  // shown when there is nothing to display
 
-// Creates a font, falling back when the preferred face is not installed (GDI would silently substitute).
-HFONT MakeFont(int px, int weight, const wchar_t* face, const wchar_t* fallback) {
-    for (const wchar_t* f : { face, fallback }) {
-        HFONT h = CreateFontW(-px, 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                              ANTIALIASED_QUALITY, DEFAULT_PITCH, f);
-        HDC dc = CreateCompatibleDC(nullptr);
-        HGDIOBJ o = SelectObject(dc, h);
-        wchar_t got[LF_FACESIZE] = {};
-        GetTextFaceW(dc, LF_FACESIZE, got);
-        SelectObject(dc, o);
-        DeleteDC(dc);
-        if (!_wcsicmp(got, f) || f == fallback) return h;
-        DeleteObject(h);
-    }
-    return nullptr;
+TextMask Icon(wchar_t glyph, int px) {
+    return RenderText(std::wstring(1, glyph), L"Segoe Fluent Icons", L"Segoe MDL2 Assets", Px(px), FW_NORMAL);
 }
-
-// Grayscale coverage mask of a string, cropped to its ink bounds.
-struct Mask {
-    int w = 0, h = 0;
-    std::vector<BYTE> a;
-};
-
-Mask RenderMask(const std::wstring& s, HFONT font) {
-    Mask m;
-    HDC dc = CreateCompatibleDC(nullptr);
-    HGDIOBJ of = SelectObject(dc, font);
-    SIZE sz;
-    GetTextExtentPoint32W(dc, s.c_str(), (int)s.size(), &sz);
-    int W = sz.cx + 8, H = sz.cy + 8;
-    BITMAPINFO bi{};
-    bi.bmiHeader = { sizeof(BITMAPINFOHEADER), W, -H, 1, 32, BI_RGB };
-    void* bits = nullptr;
-    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    HGDIOBJ ob = SelectObject(dc, bmp);
-    memset(bits, 0, (size_t)W * H * 4);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(255, 255, 255));
-    TextOutW(dc, 4, 4, s.c_str(), (int)s.size());
-    GdiFlush();
-    auto* p = static_cast<DWORD*>(bits);
-    int x0 = W, y0 = H, x1 = -1, y1 = -1;
-    for (int y = 0; y < H; y++)
-        for (int x = 0; x < W; x++)
-            if (p[y * W + x] & 0xFF) { x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y); }
-    if (x1 >= 0) {
-        m.w = x1 - x0 + 1;
-        m.h = y1 - y0 + 1;
-        m.a.resize((size_t)m.w * m.h);
-        for (int y = 0; y < m.h; y++)
-            for (int x = 0; x < m.w; x++) m.a[y * m.w + x] = (BYTE)(p[(y0 + y) * W + x0 + x] & 0xFF);
-    }
-    SelectObject(dc, ob);
-    SelectObject(dc, of);
-    DeleteObject(bmp);
-    DeleteDC(dc);
-    return m;
-}
+TextMask Label(const std::wstring& s) { return RenderText(s, L"Segoe UI Variable Text", L"Segoe UI", Px(13), FW_NORMAL); }
 
 struct Rgb { int r, g, b; };
 
@@ -110,37 +56,30 @@ struct Canvas {
         int ob = c.b * a / 255 + db * inv / 255;
         px[y * w + x] = ((DWORD)oa << 24) | ((DWORD)orr << 16) | ((DWORD)og << 8) | (DWORD)ob;
     }
-    void Draw(const Mask& m, int x, int y, Rgb c, int alpha) {
+    void Draw(const TextMask& m, int x, int y, Rgb c, int alpha) {
         for (int j = 0; j < m.h; j++)
             for (int i = 0; i < m.w; i++) Blend(x + i, y + j, c, m.a[j * m.w + i] * alpha / 255);
     }
 };
 
-struct Piece { Mask m; Rgb color; int alpha; int gapAfter; };
+struct Piece { TextMask m; Rgb color; int alpha; int gapAfter; };
 
 std::vector<Piece> Layout(int& width) {
     Rgb fg = g_light ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 };
     Rgb red = g_light ? Rgb{ 196, 30, 40 } : Rgb{ 255, 90, 90 };
     Rgb charge = g_light ? Rgb{ 0, 120, 212 } : Rgb{ 96, 205, 255 };
-    HFONT icons = MakeFont(Px(16), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
-    HFONT bolt = MakeFont(Px(11), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
-    HFONT text = MakeFont(Px(13), FW_NORMAL, L"Segoe UI Variable Text", L"Segoe UI");
-
     std::vector<Piece> out;
-    if (g_items.empty()) out.push_back({ RenderMask(std::wstring(1, kBatteryUnknown), icons), fg, 110, 0 });
+    if (g_items.empty()) out.push_back({ Icon(kBatteryUnknown, 16), fg, 110, 0 });
     for (size_t i = 0; i < g_items.size(); i++) {
         const auto& it = g_items[i];
         int a = it.dim ? 120 : 255;
         Rgb tc = it.low ? red : fg;
-        out.push_back({ RenderMask(std::wstring(1, Glyph(it.kind, it.bluetooth)), icons), fg, a, Px(5) });
+        out.push_back({ Icon(Glyph(it.kind, it.bluetooth), 16), fg, a, Px(5) });
         std::wstring t = !it.text.empty() ? it.text : it.percent >= 0 ? std::to_wstring(it.percent) + L"%" : L"?";
-        out.push_back({ RenderMask(t, text), tc, a, it.charging ? Px(2) : 0 });
-        if (it.charging) out.push_back({ RenderMask(std::wstring(1, kBolt), bolt), charge, a, 0 });
+        out.push_back({ Label(t), tc, a, it.charging ? Px(2) : 0 });
+        if (it.charging) out.push_back({ Icon(kBolt, 11), charge, a, 0 });
         out.back().gapAfter = i + 1 < g_items.size() ? Px(14) : 0;
     }
-    DeleteObject(icons);
-    DeleteObject(bolt);
-    DeleteObject(text);
 
     width = Px(8) * 2;
     for (auto& p : out) width += p.m.w + p.gapAfter;
