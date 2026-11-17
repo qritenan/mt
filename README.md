@@ -29,7 +29,7 @@ Hover for details. Click for the menu: every device (click one to hide or show i
 
 | Vendor | Devices | How |
 |---|---|---|
-| **Logitech** | Mice and keyboards on Unifying, Bolt, Lightspeed (including the PRO X3 SUPERSTRIKE dongle `046D:C54F`) and Nano receivers, over USB or Bluetooth; G headsets (G533, G535, G633/G635/G733/G933/G935, G PRO/PRO X); G435 on the newer `046D:0ADF` dongle | HID++ 1.0 / 2.0 with feature discovery: unified battery, battery level, voltage, ADC; G435: CRC-16 framed vendor reports, `GET_BATTERY` in mV |
+| **Logitech** | Mice and keyboards on Unifying, Bolt, Lightspeed (including the PRO X3 SUPERSTRIKE dongle `046D:C54F`) and Nano receivers, over USB or Bluetooth; G headsets (G533, G535, G633/G635/G733/G933/G935, G PRO/PRO X); G435 on the newer `046D:0ADF` dongle and the original Realtek receiver `046D:0ACB` | HID++ 1.0 / 2.0 with feature discovery: unified battery, battery level, voltage, ADC; G435 `0ADF`: CRC-16 framed vendor reports, `GET_BATTERY` in mV; G435 `0ACB`: Realtek PA bridge on feature report 6 (cached, see Limitations) |
 | **Razer** | Wireless mice, keyboards and dongles; BlackShark V2 HyperSpeed, V2 Pro (2023), V3 / V3 Pro / V3 X headsets; Barracuda X (2022) on its 2.4 GHz receiver (`1532:0550`) | Razer feature-report protocol; BlackShark vendor protocols (V3 / V3 Pro / V3 X queried every 5 min); Barracuda X: Airoha battery and cable queries through the receiver |
 | **SteelSeries** | Arctis 1/7/7+/9/Pro/Pro Wireless, Arctis Nova 3P/5/7/7X/7P/Pro Wireless, GameBuds; Aerox 3/5/9 Wireless, Prime Wireless, Rival 3 Wireless (Gen 2), Rival 650, Rival Pro | Vendor HID reports |
 | **SteelSeries** | Arctis 1/7/7+/9/Pro/Pro Wireless, Arctis Nova 3P/5/7/7X/7P/Pro Wireless (including `1038:225D`), GameBuds; Aerox 3/5/9 Wireless, Prime Wireless, Rival 3 Wireless (Gen 2), Rival 650, Rival Pro | Vendor HID reports |
@@ -175,6 +175,7 @@ the remaining vendors are planned follow-up phases.
 
 ## Limitations
 
+- **Logitech G435 (`046D:0ACB`):** the original Realtek LIGHTSPEED receiver has no passive battery channel. Opening its bootloader bridge mutes USB audio for about a second, so it is read at most every 45 minutes (every 5 minutes while the headset is off) and when you click *Refresh now*. The percentage is estimated from the voltage. The newer `046D:0ADF` dongle is read on every poll and does not mute audio. If audio stays muted on the Realtek receiver, unplug and replug it.
 - **Primary monitor only:** the taskbar widget sits on the primary monitor's taskbar.
 - **Crowded taskbars:** with a very full centered Windows 11 taskbar, the app buttons can reach the widget. On Windows 10 the task-button area is narrowed automatically.
 - **Phones:** read from a file Phone Link writes for the Start menu companion card, which is not a documented API and may change with Phone Link updates. The phone shows while Phone Link reports it as connected; a card older than 3 hours is shown dimmed. Charging state is not available there.
@@ -204,6 +205,7 @@ The protocols come from these projects' research:
 - [OpenRazer](https://github.com/openrazer/openrazer): Razer
 - [Solaar](https://github.com/pwr-Solaar/Solaar) and the Logitech HID++ 2.0 documents: Logitech
 - [g435-battery-percentage](https://github.com/portyporty/g435-battery-percentage) and [logitech-g435-battery](https://github.com/deddroid/logitech-g435-battery): Logitech G435 (`0ADF` dongle)
+- [g435-lightspeed-battery](https://github.com/fr0styJS/g435-lightspeed-battery): Logitech G435 Realtek receiver (`046D:0ACB`)
 - [rivalcfg](https://github.com/flozz/rivalcfg): SteelSeries mice (Rival Pro from its pull request #294)
 - [glorious-indicator](https://github.com/ikajdan/glorious-indicator) and [glorious-ctl](https://github.com/louis4craft/glorious-ctl): Glorious
 - Hitscan's web configurator ([control.hitscan.com](https://control.hitscan.com)): Hitscan

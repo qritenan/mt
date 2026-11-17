@@ -76,7 +76,8 @@ std::vector<DeviceStatus> PollAllDevices() {
     PollFantech(ctx);
     PollRazerHeadsets(ctx);  // before the generic Razer driver, which shares the vendor id
     PollHyperX(ctx);
-    PollLogitechG435(ctx);  // before the HID++ driver, which shares the vendor id
+    PollLogitechG435(ctx);  // 046D:0ADF, before HID++ (same vendor id)
+    PollG435(ctx);           // 046D:0ACB Realtek; 0ADF is already claimed above
     PollLogitech(ctx);
     PollRazer(ctx);
     PollSteelSeries(ctx);

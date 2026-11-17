@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "devices.h"
+#include "drivers/drivers.h"
 #include "widget.h"
 
 namespace {
@@ -518,7 +519,7 @@ void ShowMenu() {
     PostMessageW(g_hwnd, WM_NULL, 0, 0);
     DestroyMenu(m);
     switch (cmd) {
-        case ID_REFRESH: SetEvent(g_refreshEvt); break;
+        case ID_REFRESH: G435RequestRead(); SetEvent(g_refreshEvt); break;
         case ID_AUTOSTART: SetAutostart(!AutostartEnabled()); break;
         case ID_HIDE_LAST_KNOWN: SetHideLastKnown(!g_hideLastKnown); break;
         case ID_WIDGET_BACKGROUND: SetWidgetBackground(!g_widgetBackground); break;
@@ -628,6 +629,9 @@ int ListToConsole(bool dump) {
         write(DumpHidCollections());
         return 0;
     }
+    // The tray defers the first G435 read so logon does not mute audio. --list is an explicit
+    // request for the current level, so read now (Realtek mutes USB audio for about a second).
+    G435RequestRead();
     auto list = PollAllDevices();
     if (list.empty()) write(L"No devices with battery info found.\n");
     for (auto& s : list) {
