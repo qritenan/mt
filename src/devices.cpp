@@ -98,6 +98,7 @@ std::vector<DeviceStatus> PollAllDevices() {
     PollMachenike(ctx);  // before Ajazz in PollMiscMice, which shares the L7's 248A vendor id
     PollNiceboy(ctx);    // exact 248A:FA02 match, also before the Ajazz / Delux pollers
     PollMchoseModern(ctx);
+    PollMchoseK87V3(ctx);
     PollMchoseHeadset(ctx);
     PollVgn(ctx);
     PollMchoseKeyboard(ctx);  // 3837:3033 receiver, before the generic fallbacks

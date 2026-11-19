@@ -113,6 +113,7 @@ void PollRoyalKludge(PollContext& ctx);  // Royal Kludge MG6 Pro (VID 2E3C, QiWa
 void PollMchoseG3(PollContext& ctx);  // MCHOSE G3 V2 wireless mouse (VID 3837)
 void PollMsi(PollContext& ctx);       // MSI wireless mice: VERSA 300 ELITE, CLUTCH GM31 / GM41
 void PollMchoseModern(PollContext& ctx);  // MCHOSE K7 V2 Ultra+ (VID 3837 receiver or USB cable) and other new-family mice
+void PollMchoseK87V3(PollContext& ctx);  // MCHOSE K87 V3 keyboard on the 3837:1015 receiver (modern frame on FF80)
 void PollMchoseHeadset(PollContext& ctx);  // MCHOSE V9 Pro 2 headset (3837:6011, M HUB "MC" protocol)
 void PollVgn(PollContext& ctx);        // VGN OMNISOUND (ZHOUTING) headset (372E:10BB, V HUB "ZHOU" protocol)
 void PollMchoseKeyboard(PollContext& ctx);  // MCHOSE keyboards on the 3837:3033 receiver (GLW protocol)
