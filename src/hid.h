@@ -62,6 +62,9 @@ public:
     bool ok() const { return fd_ >= 0; }
 #endif
     const HidColl& coll() const { return c_; }
+#ifdef _WIN32
+    bool HasInputOutputReport(BYTE reportId) const;
+#endif
 
     bool Write(const std::vector<BYTE>& data, int timeoutMs = 500);
     bool Write(std::initializer_list<BYTE> data, int timeoutMs = 500) { return Write(std::vector<BYTE>(data), timeoutMs); }

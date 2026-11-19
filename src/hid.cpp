@@ -78,6 +78,21 @@ void HidDev::Close() {
     h_ = INVALID_HANDLE_VALUE;
 }
 
+bool HidDev::HasInputOutputReport(BYTE reportId) const {
+    if (!ok() || !c_.inLen() || !c_.outLen()) return false;
+    std::vector<BYTE> report(std::max(c_.inLen(), c_.outLen()));
+    PHIDP_PREPARSED_DATA data;
+    if (!HidD_GetPreparsedData(h_, &data)) return false;
+    // This checks the report descriptor using Windows' HID parser without sending a report.
+    bool supported =
+        HidP_InitializeReportForID(HidP_Input, reportId, data, reinterpret_cast<PCHAR>(report.data()),
+                                   c_.inLen()) == HIDP_STATUS_SUCCESS &&
+        HidP_InitializeReportForID(HidP_Output, reportId, data, reinterpret_cast<PCHAR>(report.data()),
+                                   c_.outLen()) == HIDP_STATUS_SUCCESS;
+    HidD_FreePreparsedData(data);
+    return supported;
+}
+
 bool HidDev::Write(const std::vector<BYTE>& data, int timeoutMs) {
     if (!ok() || !overlapped_ || !c_.outLen() || data.empty()) return false;
     std::vector<BYTE> buf(c_.outLen(), 0);
