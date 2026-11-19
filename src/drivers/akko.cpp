@@ -1,6 +1,6 @@
-// Akko V9 Dash Pro wireless mouse on its 2.4 GHz Telink receiver (USB 38EE:000C, "Akko 2.4G Wireless Mouse").
+// Akko V9 Dash Pro (38EE:000C) and Akko Dash V9 Ultra (38EE:000F, "Akko 8K Receiver") over 2.4 GHz.
 // Uses the same 64-byte vendor channel on usage page FF1C, usage 0092 as Evision / CHERRY / ATK devices
-// (protocol documented in cherry.cpp, originally from B1Chat/BatteryWatch, MIT; verified on live 38EE:000C):
+// (protocol documented in cherry.cpp, originally from B1Chat/BatteryWatch, MIT; verified with both receivers):
 //   frame:  [0] report ID 4, [1..2] checksum (LE) = sum(bytes[3..end]) & 0xFFFF, [3] type, [4..] payload
 //   query:  type 0x1A, payload 03 00 00 55 (read-only status request)
 //   reply:  [0] 4, [3] 0x1A, [8] battery percent (0..100), [9] non-zero while charging
@@ -9,12 +9,22 @@
 namespace {
 
 constexpr USHORT kVid = 0x38EE;
-constexpr USHORT kPid = 0x000C;
 constexpr USHORT kPage = 0xFF1C;
 constexpr USHORT kUsage = 0x0092;
 constexpr size_t kLen = 64;
 constexpr BYTE kReportId = 0x04;
 constexpr BYTE kStatusType = 0x1A;
+
+struct Model {
+    USHORT pid;
+    const wchar_t* name;
+    const wchar_t* key;
+};
+
+constexpr Model kModels[] = {
+    { 0x000C, L"Akko V9 Dash Pro", L"akko:38ee:000c" },
+    { 0x000F, L"Akko Dash V9 Ultra", L"akko:38ee:000f" },
+};
 
 std::vector<BYTE> BuildQuery() {
     std::vector<BYTE> f(kLen, 0);
@@ -58,22 +68,24 @@ bool Query(const HidColl& c, std::vector<BYTE>& reply) {
 }  // namespace
 
 void PollAkko(PollContext& ctx) {
-    if (ctx.IsClaimed(kVid, kPid)) return;
-    for (const HidColl* c : ctx.Find(kVid, kPid, [](const HidColl& c) {
-             return c.page() == kPage && c.usage() == kUsage && c.inLen() == kLen && c.outLen() == kLen;
-         })) {
-        std::vector<BYTE> reply;
-        if (!Query(*c, reply)) continue;
+    for (const Model& model : kModels) {
+        if (ctx.IsClaimed(kVid, model.pid)) continue;
+        for (const HidColl* c : ctx.Find(kVid, model.pid, [](const HidColl& c) {
+                 return c.page() == kPage && c.usage() == kUsage && c.inLen() == kLen && c.outLen() == kLen;
+             })) {
+            std::vector<BYTE> reply;
+            if (!Query(*c, reply)) continue;
 
-        DeviceStatus s;
-        s.key = L"akko:38ee:000c";
-        s.name = L"Akko V9 Dash Pro";
-        s.kind = DeviceKind::Mouse;
-        s.via = L"2.4 GHz receiver";
-        s.percent = reply[8];
-        s.charging = reply[9] != 0;
-        s.graceSec = 1800;
-        ctx.Add(s, kVid, kPid);
-        return;
+            DeviceStatus s;
+            s.key = model.key;
+            s.name = model.name;
+            s.kind = DeviceKind::Mouse;
+            s.via = L"2.4 GHz receiver";
+            s.percent = reply[8];
+            s.charging = reply[9] != 0;
+            s.graceSec = 1800;
+            ctx.Add(s, kVid, model.pid);
+            break;
+        }
     }
 }
