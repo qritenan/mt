@@ -640,7 +640,10 @@ void UpdateWidget() {
         it.accent = AccentFor(e->st);
         items.push_back(it);
         if (!tip.empty()) tip += L"\n";
-        tip += DisplayName(*e) + L": " + (g_widgetStyle == widget::DisplayStyle::Ring ? RingStatusText(*e) : StatusText(*e));
+        std::wstring tipLine = DisplayName(*e);
+        std::wstring tipStatus = g_widgetStyle == widget::DisplayStyle::Ring ? RingStatusText(*e) : StatusText(*e);
+        if (!tipStatus.empty()) tipLine += L": " + tipStatus;
+        tip += tipLine;
     }
     if (tip.empty()) tip = std::wstring(L"BatteryHub: ") + T(L"No devices with battery info found");
     widget::SetItems(items, tip);
