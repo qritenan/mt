@@ -22,6 +22,7 @@
 #include "i18n.h"
 #include "json_output.h"
 #include "labels.h"
+#include "memory_trim.h"
 #include "report.h"
 #include "rename_dialog.h"
 #include "widget.h"
@@ -648,6 +649,7 @@ void OnResults(std::vector<DeviceStatus>& results) {
     }
     UpdatePlaceholder();
     UpdateWidget();
+    memory_trim::Soon();  // the poll (HID, Bluetooth, drivers) is done: give its pages back until the next one
 }
 
 // Makes the actual display match the chosen mode; falls back to tray icons if the taskbar
@@ -931,6 +933,7 @@ void ShowMenu() {
                               g_hwnd, nullptr);
     PostMessageW(g_hwnd, WM_NULL, 0, 0);
     DestroyMenu(m);
+    memory_trim::Soon();
     switch (cmd) {
         case ID_REFRESH: SetEvent(g_refreshEvt); break;
         case ID_AUTOSTART: SetAutostart(!AutostartEnabled()); break;

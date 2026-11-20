@@ -20,6 +20,7 @@
 #include "devices.h"
 #include "hid.h"
 #include "i18n.h"
+#include "memory_trim.h"
 
 namespace {
 
@@ -665,6 +666,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             g_scanned = g_sending = false;
             if (g_font) { DeleteObject(g_font); g_font = nullptr; }
             if (g_quitOnClose) PostQuitMessage(0);  // opened with --report: the process ends with the window
+            else memory_trim::Soon();
             return 0;
     }
     return DefWindowProcW(h, msg, wp, lp);

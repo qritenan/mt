@@ -2,6 +2,7 @@
 #include "history_model.h"
 #include "runtime_estimate.h"
 #include "i18n.h"
+#include "memory_trim.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -541,6 +542,7 @@ LRESULT CALLBACK ViewProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_uiTitle) DeleteObject(g_uiTitle);
             if (g_uiValue) DeleteObject(g_uiValue);
             g_uiFont = g_uiBold = g_uiTitle = g_uiValue = nullptr;
+            memory_trim::Soon();
             return 0;
     }
     return DefWindowProcW(w, msg, wp, lp);

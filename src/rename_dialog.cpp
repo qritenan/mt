@@ -1,6 +1,7 @@
 #include "rename_dialog.h"
 #include "device_aliases.h"
 #include "i18n.h"
+#include "memory_trim.h"
 
 #include <algorithm>
 #include <vector>
@@ -139,6 +140,7 @@ bool PromptDeviceName(HWND owner, const std::wstring& currentName, std::wstring&
     }
     if (IsWindow(dialog)) DestroyWindow(dialog);
     if (ownerEnabled) EnableWindow(owner, TRUE);
+    memory_trim::Soon();
     if (state.accepted) result = std::move(state.result);
     return state.accepted;
 }
