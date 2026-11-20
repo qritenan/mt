@@ -436,12 +436,12 @@ void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
     const int barW = std::max(1, (int)(bar.right - bar.left));
     const int barH = std::max(1, (int)(bar.bottom - bar.top));
     const int count = std::max(1, (int)g_items.size());
-    const int pad = Px(3), verticalPad = Px(3), gap = Px(4);
+    const int pad = Px(2), verticalPad = Px(2), gap = Px(2);
     const bool vertical = barH > barW;
-    // Keep the ring close to the native notification-area glyph size instead of filling the taskbar height.
-    const int available = std::max(Px(16), (vertical ? barW : barH) - Px(12));
-    const int diameter = std::min(Px(22), available);
-    const int stroke = std::max(Px(2), diameter / 9);
+    // Match the 16-DIP glyph scale used by the existing taskbar renderer; cap the ring to the taskbar's usable short axis.
+    const int available = std::max(1, (vertical ? barW : barH) - Px(10));
+    const int diameter = std::min(Px(16), available);
+    const int stroke = std::max(1, diameter / 8);
     int W = vertical ? diameter + pad * 2 : pad * 2 + count * diameter + (count - 1) * gap;
     int H = vertical ? pad * 2 + count * diameter + (count - 1) * gap : diameter + verticalPad * 2;
     W = std::max(1, W);
@@ -452,7 +452,7 @@ void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
     const Rgb track{ 69, 73, 78 };
     const Rgb green{ 42, 215, 112 };
     const Rgb white{ 248, 250, 252 };
-    FillRoundedPlate(cv, plate, Px(6));
+    FillRoundedPlate(cv, plate, Px(4));
     if (hover) {
         // Subtle hover feedback; the dark plate remains the defining appearance.
         for (int y = Px(2); y < H - Px(2); ++y)
@@ -460,8 +460,8 @@ void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
                 cv.Blend(x, y, Rgb{ 255, 255, 255 }, 10);
     }
 
-    HFONT icons = MakeFont(Px(11), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
-    HFONT status = MakeFont(Px(7), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
+    HFONT icons = MakeFont(Px(8), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
+    HFONT status = MakeFont(Px(6), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
     for (int i = 0; i < count; ++i) {
         const bool placeholder = g_items.empty();
         const WidgetItem* item = placeholder ? nullptr : &g_items[(size_t)i];
