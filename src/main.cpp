@@ -46,6 +46,7 @@ constexpr UINT ALERT_ICON_ID = 2;
 enum MenuId : UINT {
     ID_REFRESH = 100, ID_AUTOSTART, ID_HIDE_LAST_KNOWN, ID_WIDGET_BACKGROUND, ID_EXIT, ID_MODE_WIDGET, ID_MODE_TRAY, ID_SUPPORT, ID_REPORT,
     ID_BRAND_COLORS, ID_STACKED, ID_SHOW_DISCONNECTED, ID_RECORD_HISTORY, ID_DIM_SLEEPING,
+    ID_WIDGET_STYLE_NUMERIC, ID_WIDGET_STYLE_RING,
     ID_POLL_FIRST = 500,  // "Check battery every": ID_POLL_FIRST + 0..7
     ID_UPDATE = 200, ID_AUTO_UPDATE,
     ID_LANG_AUTO = 400, ID_LANG_ADD, ID_LANG_FIRST,  // "Language": ID_LANG_FIRST + 0..63
@@ -77,6 +78,7 @@ bool g_recordHistory = true;  // save readings for "Battery history..." (menu op
 std::wstring g_widgetMonitor = L"all";  // which taskbars show the widget: "all", "main" or one monitor id
 bool g_widgetBackground = false;  // draw a plate behind the taskbar text (transparent taskbar themes)
 bool g_stacked = false;      // icon above the percentage (menu option)
+widget::DisplayStyle g_widgetStyle = widget::DisplayStyle::Numeric;
 bool g_brandColors = false;  // off by default; known brands get their color (Razer green, Logitech blue, ...)
 std::atomic<DWORD> g_pollIntervalMs{ 60 * 1000 };  // set from the menu, read by the worker thread
 
@@ -293,6 +295,16 @@ void SetWidgetMonitor(const std::wstring& v) {
 }
 bool LoadStacked() { return LoadBoolSetting(L"StackedLayout", false); }
 void SaveStacked(bool on) { SaveBoolSetting(L"StackedLayout", on); }
+widget::DisplayStyle LoadWidgetStyle() {
+    DWORD value = 0, size = sizeof(value);
+    if (RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, L"WidgetStyle", RRF_RT_REG_DWORD, nullptr, &value, &size) != ERROR_SUCCESS)
+        return widget::DisplayStyle::Numeric;
+    return value == 1 ? widget::DisplayStyle::Ring : widget::DisplayStyle::Numeric;
+}
+void SaveWidgetStyle(widget::DisplayStyle style) {
+    DWORD value = style == widget::DisplayStyle::Ring ? 1 : 0;
+    RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, L"WidgetStyle", REG_DWORD, &value, sizeof(value));
+}
 bool LoadBrandColors() { return LoadBoolSetting(L"BrandColors", false); }
 void SaveBrandColors(bool on) { SaveBoolSetting(L"BrandColors", on); }
 DWORD LoadPollSeconds() {
@@ -460,6 +472,23 @@ std::wstring StatusText(const TrayEntry& e) {
     return t;
 }
 
+// The circular display intentionally keeps numeric percentages out of hover tooltips as well.
+std::wstring RingStatusText(const TrayEntry& e) {
+    const auto& s = e.st;
+    if (!s.connected) return T(L"off / not connected");
+    std::wstring t;
+    if (s.full || (s.charging && (s.percent >= 100 || e.lastPct >= 100)))
+        t = T(L"fully charged");
+    else if (s.charging)
+        t = T(L"charging");
+    else if (s.asleep)
+        t = T(L"asleep");
+    else if (s.percent < 0 && e.lastPct < 0)
+        t = T(L"unknown");
+    if (s.asleep && (s.charging || s.full)) t += std::wstring(L", ") + T(L"asleep");
+    return t;
+}
+
 void TrayCall(DWORD msg, UINT uid, HICON icon, const std::wstring& tip, const wchar_t* infoTitle = nullptr,
               const std::wstring& info = L"") {
     NOTIFYICONDATAW nid{ sizeof(nid) };
@@ -595,6 +624,7 @@ void UpdateWidget() {
     std::wstring tip;
     for (auto* e : list) {
         WidgetItem it;
+        it.key = e->st.key;
         it.kind = e->st.kind;
         bool offline = !e->st.connected;
         it.percent = offline ? -1 : (e->st.percent >= 0 ? e->st.percent : e->lastPct);
@@ -603,13 +633,14 @@ void UpdateWidget() {
         it.charging = !offline && !e->st.asleep && e->st.charging;
         it.full = !offline && (e->st.full || (e->st.charging && it.percent >= 100));
         it.dim = ShouldDim(e->st);
+        it.connected = !offline;
         it.low = !offline && !it.charging && it.percent >= 0 && it.percent <= LOW_BATTERY;
         it.bluetooth = e->st.via == L"Bluetooth";
         it.label = labels[items.size()];
         it.accent = AccentFor(e->st);
         items.push_back(it);
         if (!tip.empty()) tip += L"\n";
-        tip += DisplayName(*e) + L": " + StatusText(*e);
+        tip += DisplayName(*e) + L": " + (g_widgetStyle == widget::DisplayStyle::Ring ? RingStatusText(*e) : StatusText(*e));
     }
     if (tip.empty()) tip = std::wstring(L"BatteryHub: ") + T(L"No devices with battery info found");
     widget::SetItems(items, tip);
@@ -749,6 +780,13 @@ void SetStacked(bool on) {
     widget::SetStacked(on);
 }
 
+void SetWidgetStyle(widget::DisplayStyle style) {
+    g_widgetStyle = style;
+    SaveWidgetStyle(style);
+    widget::SetDisplayStyle(style);
+    UpdateWidget();
+}
+
 void SetBrandColors(bool on) {
     g_brandColors = on;
     SaveBrandColors(on);
@@ -874,9 +912,18 @@ void ShowMenu() {
     AppendMenuW(m, MF_STRING | (g_wantWidget ? MF_CHECKED : 0), ID_MODE_WIDGET, T(L"Show on the taskbar (icon + percentage)"));
     AppendMenuW(m, MF_STRING | (!g_wantWidget ? MF_CHECKED : 0), ID_MODE_TRAY, T(L"Show as tray icons"));
     CheckMenuRadioItem(m, ID_MODE_WIDGET, ID_MODE_TRAY, g_wantWidget ? ID_MODE_WIDGET : ID_MODE_TRAY, MF_BYCOMMAND);
-    UINT bgFlags = MF_STRING | (g_widgetBackground ? MF_CHECKED : 0) | (g_wantWidget ? 0 : MF_GRAYED);
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    UINT styleFlags = g_wantWidget ? MF_STRING : (MF_STRING | MF_GRAYED);
+    AppendMenuW(m, styleFlags | (g_widgetStyle == widget::DisplayStyle::Numeric ? MF_CHECKED : 0),
+                ID_WIDGET_STYLE_NUMERIC, T(L"Numeric battery display"));
+    AppendMenuW(m, styleFlags | (g_widgetStyle == widget::DisplayStyle::Ring ? MF_CHECKED : 0),
+                ID_WIDGET_STYLE_RING, T(L"Circular battery rings"));
+    CheckMenuRadioItem(m, ID_WIDGET_STYLE_NUMERIC, ID_WIDGET_STYLE_RING,
+                       g_widgetStyle == widget::DisplayStyle::Ring ? ID_WIDGET_STYLE_RING : ID_WIDGET_STYLE_NUMERIC, MF_BYCOMMAND);
+    const bool ringStyle = g_widgetStyle == widget::DisplayStyle::Ring;
+    UINT bgFlags = MF_STRING | (g_widgetBackground ? MF_CHECKED : 0) | (g_wantWidget && !ringStyle ? 0 : MF_GRAYED);
     AppendMenuW(m, bgFlags, ID_WIDGET_BACKGROUND, T(L"Background behind taskbar text (for transparent taskbars)"));
-    AppendMenuW(m, MF_STRING | (g_stacked ? MF_CHECKED : 0) | (g_wantWidget ? 0 : MF_GRAYED), ID_STACKED, T(L"Icons above percentages (narrower)"));
+    AppendMenuW(m, MF_STRING | (g_stacked ? MF_CHECKED : 0) | (g_wantWidget && !ringStyle ? 0 : MF_GRAYED), ID_STACKED, T(L"Icons above percentages (narrower)"));
     // With more than one monitor: choose which taskbars show the widget (all, main only, or one monitor).
     auto monitors = widget::OtherMonitors();
     if (monitors.size() > 31) monitors.resize(31);
@@ -898,7 +945,8 @@ void ShowMenu() {
         CheckMenuRadioItem(sub, ID_MONITOR_ALL, ID_MONITOR_FIRST + 31, checked, MF_BYCOMMAND);
         AppendMenuW(m, MF_POPUP | (g_wantWidget ? 0 : MF_GRAYED), (UINT_PTR)sub, T(L"Show the widget on"));
     }
-    AppendMenuW(m, MF_STRING | (g_brandColors ? MF_CHECKED : 0), ID_BRAND_COLORS, T(L"Brand colors (Razer green, Logitech blue, ...)"));
+    AppendMenuW(m, MF_STRING | (g_brandColors ? MF_CHECKED : 0) | (ringStyle ? MF_GRAYED : 0),
+                ID_BRAND_COLORS, T(L"Brand colors (Razer green, Logitech blue, ...)"));
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     // Language: automatic, every built-in or user-added language (in its own name), and a way to add one.
     i18n::Init();  // picks up language files added since the last time
@@ -964,6 +1012,8 @@ void ShowMenu() {
         case ID_MONITOR_MAIN: SetWidgetMonitor(L"main"); break;
         case ID_BRAND_COLORS: SetBrandColors(!g_brandColors); break;
         case ID_STACKED: SetStacked(!g_stacked); break;
+        case ID_WIDGET_STYLE_NUMERIC: SetWidgetStyle(widget::DisplayStyle::Numeric); break;
+        case ID_WIDGET_STYLE_RING: SetWidgetStyle(widget::DisplayStyle::Ring); break;
         case ID_MODE_WIDGET: SetMode(true); break;
         case ID_MODE_TRAY: SetMode(false); break;
         case ID_SUPPORT: ShellExecuteW(nullptr, L"open", L"https://github.com/sponsors/krisgfx9", nullptr, nullptr, SW_SHOWNORMAL); break;
@@ -1290,8 +1340,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     g_widgetBackground = LoadWidgetBackground();
     g_brandColors = LoadBrandColors();
     g_stacked = LoadStacked();
+    g_widgetStyle = LoadWidgetStyle();
     g_pollIntervalMs = LoadPollSeconds() * 1000;
     widget::SetStacked(g_stacked);
+    widget::SetDisplayStyle(g_widgetStyle);
     widget::SetBackground(g_widgetBackground);  // remembered by the widget across re-creation
     i18n::Init();
     g_widgetMonitor = LoadWidgetMonitor();
