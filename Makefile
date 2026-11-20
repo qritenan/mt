@@ -34,7 +34,7 @@ build/app_res.o: res/app.rc res/app.manifest res/app.ico res/app_light.ico build
 clean:
 	rm -rf build BatteryHub.exe
 
-test: test-update-core test-update-win test-update-signature
+test: test-ring-geometry test-update-core test-update-win test-update-signature
 	@mkdir -p build
 	$(CXX) -std=c++17 -O2 -Wall tests/device_aliases_test.cpp -o build/device_aliases_test.exe
 	./build/device_aliases_test.exe
@@ -115,6 +115,11 @@ test: test-update-core test-update-win test-update-signature
 	$(CXX) -std=c++17 -O2 -Wall tests/gamesir_ble_protocol_test.cpp -o build/gamesir_ble_protocol_test.exe
 	./build/gamesir_ble_protocol_test.exe
 
+test-ring-geometry:
+	@mkdir -p build
+	$(CXX) -std=c++17 -O2 -Wall -Wextra tests/ring_geometry_test.cpp -o build/ring_geometry_test.exe
+	./build/ring_geometry_test.exe
+
 test-update-core:
 	@mkdir -p build
 	$(CXX) -std=c++17 -O2 -Wall tests/update_core_test.cpp src/update_core.cpp -o build/update_core_test.exe
@@ -133,4 +138,4 @@ test-update-win: build/version.h build/app_res.o
 
 FORCE:
 
-.PHONY: clean test test-update-core test-update-win test-update-signature FORCE
+.PHONY: clean test test-ring-geometry test-update-core test-update-win test-update-signature FORCE

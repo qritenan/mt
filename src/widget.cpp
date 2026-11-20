@@ -1,11 +1,14 @@
 #include "widget.h"
 
 #include "i18n.h"
+#include "ring_geometry.h"
 
 #include <commctrl.h>
 #include <uiautomation.h>
 #include <algorithm>
 #include <climits>
+#include <cmath>
+#include <map>
 
 namespace {
 
@@ -14,11 +17,21 @@ UINT g_clickMsg;
 bool g_light, g_hover;
 bool g_background;  // opaque rounded plate behind the text, for transparent / restyled taskbars
 bool g_stacked;     // icon above the percentage (menu option, PR #525)
+widget::DisplayStyle g_displayStyle = widget::DisplayStyle::Numeric;
 bool g_vertical;    // the primary taskbar is docked left or right: one block per device, stacked (PR #321)
 std::vector<WidgetItem> g_items;
+struct RingTween {
+    double from = 0.0;
+    double to = 0.0;
+    ULONGLONG started = 0;
+    bool active = false;
+    bool hasValue = true;
+};
+std::map<std::wstring, RingTween> g_ringTweens;
+constexpr UINT_PTR kRingAnimationTimer = 4;
 std::wstring g_tipText;
 RECT g_lastTray{}, g_lastBar{}, g_lastWidgets{};
-int g_lastW = -1, g_lastDpi = 0, g_lastLeft = -1;
+int g_lastW = -1, g_lastDpi = 0, g_lastLeft = -1, g_lastTop = INT_MIN;
 SIZE g_size{};
 HINSTANCE g_inst;
 
@@ -31,6 +44,7 @@ struct Mirror {
     SIZE size{};
     int dpi = 0;
     int lastLeft = INT_MIN;  // client x it was last placed at; INT_MIN = not placed (hidden)
+    int lastTop = INT_MIN;
 };
 std::vector<Mirror> g_mirrors;
 // Which taskbars show the strip: "all", "main", or one monitor's id (MonitorId), e.g. only monitor 3.
@@ -344,6 +358,170 @@ struct Canvas {
             for (int i = 0; i < m.w; i++) Blend(x + i, y + j, c, m.a[j * m.w + i] * alpha / 255);
     }
 };
+double RingProgress(const WidgetItem& item) {
+    if (item.percent < 0 || !item.connected || item.key.empty()) return item.percent >= 0 && item.connected ? item.percent : -1.0;
+    auto it = g_ringTweens.find(item.key);
+    if (it == g_ringTweens.end()) return ring_geometry::ClampPercent(item.percent);
+    const RingTween& tween = it->second;
+    if (!tween.hasValue) return -1.0;
+    if (!tween.active) return tween.to;
+    double t = (GetTickCount64() - tween.started) / 420.0;
+    return ring_geometry::Interpolate(tween.from, tween.to, t);
+}
+
+void BlendCoverage(Canvas& cv, int x, int y, Rgb color, double coverage, int alpha = 255) {
+    if (coverage <= 0.0) return;
+    int a = (int)std::lround(std::clamp(coverage, 0.0, 1.0) * alpha);
+    cv.Blend(x, y, color, a);
+}
+
+void DrawRingTrack(Canvas& cv, int cx, int cy, double radius, double thickness, Rgb color, int alpha) {
+    const double half = thickness * 0.5;
+    int extent = (int)std::ceil(radius + half + 1.0);
+    for (int y = std::max(0, cy - extent); y <= std::min(cv.h - 1, cy + extent); ++y) {
+        for (int x = std::max(0, cx - extent); x <= std::min(cv.w - 1, cx + extent); ++x) {
+            double dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+            double error = std::abs(std::hypot(dx, dy) - radius);
+            BlendCoverage(cv, x, y, color, half + 0.5 - error, alpha);
+        }
+    }
+}
+
+// Draws a clockwise arc from twelve o'clock with antialiased, round end caps.
+void DrawRingProgress(Canvas& cv, int cx, int cy, double radius, double thickness, int percent, Rgb color, int alpha) {
+    percent = ring_geometry::ClampPercent(percent);
+    if (percent <= 0) return;
+    if (percent >= 100) {
+        DrawRingTrack(cv, cx, cy, radius, thickness, color, alpha);
+        return;
+    }
+    const double half = thickness * 0.5;
+    const double sweep = ring_geometry::SweepRadians(percent);
+    const double endX = cx + radius * std::sin(sweep);
+    const double endY = cy - radius * std::cos(sweep);
+    const double startX = cx, startY = cy - radius;
+    int extent = (int)std::ceil(radius + half + 1.0);
+    for (int y = std::max(0, cy - extent); y <= std::min(cv.h - 1, cy + extent); ++y) {
+        for (int x = std::max(0, cx - extent); x <= std::min(cv.w - 1, cx + extent); ++x) {
+            double px = x + 0.5, py = y + 0.5;
+            double dx = px - cx, dy = py - cy;
+            double angle = std::atan2(dx, -dy);
+            if (angle < 0.0) angle += 2.0 * ring_geometry::kPi;
+            double error = 1e9;
+            if (angle <= sweep) error = std::abs(std::hypot(dx, dy) - radius);
+            double es = std::hypot(px - startX, py - startY);
+            double ee = std::hypot(px - endX, py - endY);
+            error = std::min(error, std::min(es, ee));
+            BlendCoverage(cv, x, y, color, half + 0.5 - error, alpha);
+        }
+    }
+}
+
+// Fills a rounded rectangle inset from the canvas edges. The separate x/y insets let the ring
+// renderer keep the window at full taskbar height (a layered child window with a non-zero y offset
+// is not composited reliably over the taskbar) while drawing a compact floating capsule inside it.
+void FillRoundedPlate(Canvas& cv, Rgb color, int radius, int insetX = 0, int insetY = 0, int alpha = 255) {
+    const int x0 = std::clamp(insetX, 0, cv.w);
+    const int y0 = std::clamp(insetY, 0, cv.h);
+    const int x1 = std::max(x0, cv.w - insetX);
+    const int y1 = std::max(y0, cv.h - insetY);
+    radius = std::clamp(radius, 0, std::min(x1 - x0, y1 - y0) / 2);
+    for (int y = y0; y < y1; ++y) {
+        for (int x = x0; x < x1; ++x) {
+            int qx = x < x0 + radius ? x0 + radius - x : (x >= x1 - radius ? x - (x1 - radius - 1) : 0);
+            int qy = y < y0 + radius ? y0 + radius - y : (y >= y1 - radius ? y - (y1 - radius - 1) : 0);
+            double d = std::hypot((double)qx, (double)qy);
+            if ((qx == 0 || qy == 0) || d <= radius + 0.5)
+                BlendCoverage(cv, x, y, color, qx == 0 || qy == 0 ? 1.0 : radius + 0.5 - d, alpha);
+        }
+    }
+}
+
+void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
+    RECT bar{};
+    GetClientRect(taskbar, &bar);
+    const int barW = std::max(1, (int)(bar.right - bar.left));
+    const int barH = std::max(1, (int)(bar.bottom - bar.top));
+    const int count = std::max(1, (int)g_items.size());
+    const int pad = Px(2), verticalPad = Px(2), gap = Px(2);
+    const bool vertical = barH > barW;
+    // Match the 16-DIP glyph scale used by the existing taskbar renderer; cap the ring to the taskbar's usable short axis.
+    const int available = std::max(1, (vertical ? barW : barH) - Px(10));
+    const int diameter = std::min(Px(16), available);
+    const int stroke = std::max(1, diameter / 8);
+    int W = vertical ? diameter + pad * 2 : pad * 2 + count * diameter + (count - 1) * gap;
+    // Over the taskbar, keep the window at the bar's full height and centre the capsule inside it:
+    // a layered child window offset vertically does not composite reliably on all taskbars.
+    int H = vertical ? pad * 2 + count * diameter + (count - 1) * gap : barH;
+    W = std::max(1, W);
+    H = std::max(1, H);
+    Canvas cv(W, H);
+    for (auto& p : cv.px) p = 0x01000000;
+    const Rgb plate{ 16, 18, 21 };
+    const Rgb track{ 69, 73, 78 };
+    const Rgb green{ 42, 215, 112 };
+    const Rgb white{ 248, 250, 252 };
+    const int capsuleW = diameter + pad * 2, capsuleH = diameter + verticalPad * 2;
+    const int plateX = vertical ? (W - capsuleW) / 2 : 0;
+    const int plateY = vertical ? 0 : (H - capsuleH) / 2;
+    FillRoundedPlate(cv, plate, Px(4), plateX, plateY);
+    if (hover) {
+        // Hover tint follows the same rounded shape, so it never lightens the transparent corners.
+        FillRoundedPlate(cv, Rgb{ 255, 255, 255 }, Px(4), plateX, plateY, g_light ? 22 : 16);
+    }
+
+    HFONT icons = MakeFont(Px(8), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
+    HFONT status = MakeFont(Px(6), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
+    for (int i = 0; i < count; ++i) {
+        const bool placeholder = g_items.empty();
+        const WidgetItem* item = placeholder ? nullptr : &g_items[(size_t)i];
+        const int cx = vertical ? W / 2 : pad + diameter / 2 + i * (diameter + gap);
+        const int cy = vertical ? pad + diameter / 2 + i * (diameter + gap) : H / 2;
+        const double radius = diameter * 0.5 - stroke * 0.5 - Px(1);
+        int alpha = item && item->dim ? 145 : 255;
+        const bool unknown = item && item->percent < 0;
+        DrawRingTrack(cv, cx, cy, radius, stroke, track, unknown ? 120 : 255);
+        double progress = item ? RingProgress(*item) : -1.0;
+        if (progress >= 0.0) DrawRingProgress(cv, cx, cy, radius, stroke, (int)std::lround(progress), green, alpha);
+
+        wchar_t glyph = placeholder ? kBatteryUnknown : Glyph(item->kind, item->bluetooth);
+        Mask icon = RenderMask(std::wstring(1, glyph), icons, false);
+        cv.Draw(icon, cx - icon.w / 2, cy - icon.h / 2, white, alpha);
+
+        if (item && (item->charging || item->full)) {
+            // Badge just outside the ring at the upper right, clear of the progress stroke.
+            wchar_t mark = item->full ? kCheck : kBolt;
+            Mask badge = RenderMask(std::wstring(1, mark), status, false);
+            const double diag = (radius + stroke * 0.5) * 0.74;
+            int bx = cx + (int)std::lround(diag) - badge.w / 2;
+            int by = cy - (int)std::lround(diag) - badge.h / 2;
+            cv.Draw(badge, bx, by, white, alpha);
+        }
+    }
+    DeleteObject(icons);
+    DeleteObject(status);
+
+    HDC screen = GetDC(nullptr);
+    HDC mem = CreateCompatibleDC(screen);
+    BITMAPINFO bi{};
+    bi.bmiHeader = { sizeof(BITMAPINFOHEADER), W, -H, 1, 32, BI_RGB };
+    void* bits = nullptr;
+    HBITMAP bmp = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (bmp && bits) {
+        memcpy(bits, cv.px.data(), (size_t)W * H * 4);
+        HGDIOBJ ob = SelectObject(mem, bmp);
+        size = { W, H };
+        SIZE sz{ W, H };
+        POINT src{ 0, 0 };
+        BLENDFUNCTION bf{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+        UpdateLayeredWindow(wnd, screen, nullptr, &sz, mem, &src, 0, &bf, ULW_ALPHA);
+        SelectObject(mem, ob);
+        DeleteObject(bmp);
+    }
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+}
+
 
 // Soft glow around a glyph, like a lit RGB device: the coverage mask padded by r pixels, box-blurred
 // twice and brightened so a thin icon outline still gives a visible glow.
@@ -520,6 +698,10 @@ std::vector<Piece> Layout(int barW, int barH, int& width, int& height) {
 
 // Draws the strip for one window: the primary one or a mirror on a secondary taskbar.
 void PaintStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
+    if (g_displayStyle == widget::DisplayStyle::Ring) {
+        PaintRingStrip(wnd, taskbar, hover, size);
+        return;
+    }
     RECT bar;
     GetClientRect(taskbar, &bar);
     int W = 0, H = 0;
@@ -667,10 +849,14 @@ void PositionMirror(Mirror& m) {
     if (!known || m.size.cx <= 0 || left < minLeft) { HideMirror(m); return; }
     POINT p{ left, bar.top };
     ScreenToClient(m.bar, &p);
+    RECT client{};
+    GetClientRect(m.bar, &client);
+    int top = std::max(0, (int)(client.bottom - m.size.cy) / 2);
     bool covered = GetWindow(m.wnd, GW_HWNDPREV) != nullptr;
-    if (!covered && p.x == m.lastLeft) return;
+    if (!covered && p.x == m.lastLeft && top == m.lastTop) return;
     m.lastLeft = p.x;
-    SetWindowPos(m.wnd, HWND_TOP, p.x, 0, m.size.cx, m.size.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    m.lastTop = top;
+    SetWindowPos(m.wnd, HWND_TOP, p.x, top, m.size.cx, m.size.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
 void AddTool(HWND w) {
@@ -820,6 +1006,22 @@ void SetHover(HWND h, bool on) {
 }
 
 LRESULT CALLBACK WidgetProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_TIMER && wp == kRingAnimationTimer) {
+        bool active = false;
+        const ULONGLONG now = GetTickCount64();
+        for (auto& [key, tween] : g_ringTweens) {
+            if (!tween.active) continue;
+            if (now - tween.started >= 420) {
+                tween.from = tween.to;
+                tween.active = false;
+            } else {
+                active = true;
+            }
+        }
+        PaintAll();
+        if (!active) KillTimer(h, kRingAnimationTimer);
+        return 0;
+    }
     switch (msg) {
         case WM_MOUSEMOVE: {
             TRACKMOUSEEVENT t{ sizeof(t), TME_LEAVE, h, 0 };
@@ -919,6 +1121,42 @@ void Destroy() {
 bool Alive() { return g_wnd && IsWindow(g_wnd) && g_taskbar && IsWindow(g_taskbar); }
 
 void SetItems(const std::vector<WidgetItem>& items, const std::wstring& tooltip) {
+    const ULONGLONG now = GetTickCount64();
+    std::map<std::wstring, bool> live;
+    bool animate = false;
+    for (const auto& item : items) {
+        if (item.key.empty()) continue;
+        live[item.key] = true;
+        auto it = g_ringTweens.find(item.key);
+        if (item.percent < 0 || !item.connected) {
+            if (it != g_ringTweens.end()) {
+                it->second.active = false;
+                it->second.hasValue = false;
+            }
+            continue;
+        }
+        const double target = ring_geometry::ClampPercent(item.percent);
+        if (it == g_ringTweens.end() || !it->second.hasValue) {
+            g_ringTweens[item.key] = { target, target, now, false, true };
+        } else {
+            RingTween& tween = it->second;
+            double current = tween.active
+                ? ring_geometry::Interpolate(tween.from, tween.to, (now - tween.started) / 420.0)
+                : tween.to;
+            if (std::abs(current - target) >= 0.01) {
+                tween.from = current;
+                tween.to = target;
+                tween.started = now;
+                tween.active = true;
+                animate = true;
+            }
+        }
+    }
+    for (auto it = g_ringTweens.begin(); it != g_ringTweens.end();) {
+        if (!live.count(it->first)) it = g_ringTweens.erase(it);
+        else ++it;
+    }
+    if (animate && g_wnd) SetTimer(g_wnd, kRingAnimationTimer, 16, nullptr);
     g_items = items;
     if (tooltip != g_tipText && g_tip) {
         g_tipText = tooltip;
@@ -949,6 +1187,18 @@ void SetBackground(bool on) {
 
 void SetStacked(bool on) {
     g_stacked = on;
+    PaintAll();
+    if (g_wnd) Reposition();
+}
+
+void SetDisplayStyle(DisplayStyle style) {
+    if (g_displayStyle == style) return;
+    g_displayStyle = style;
+    for (auto& [key, tween] : g_ringTweens) {
+        tween.from = tween.to;
+        tween.active = false;
+    }
+    if (g_wnd) KillTimer(g_wnd, kRingAnimationTimer);
     PaintAll();
     if (g_wnd) Reposition();
 }
@@ -1006,12 +1256,14 @@ bool Reposition() {
                 MoveWindow(g_rebar, tl.x, tl.y, rr.right - rr.left, top - tl.y, TRUE);
         }
         bool covered = GetWindow(g_wnd, GW_HWNDPREV) != nullptr;
-        if (!covered && EqualRect(&tr, &g_lastTray) && EqualRect(&bar, &g_lastBar) && g_lastW == g_size.cy && g_lastLeft == top)
+        if (!covered && EqualRect(&tr, &g_lastTray) && EqualRect(&bar, &g_lastBar) && g_lastW == g_size.cy &&
+            g_lastLeft == top && g_lastTop == 0)
             return true;
         g_lastTray = tr;
         g_lastBar = bar;
         g_lastW = g_size.cy;
         g_lastLeft = top;
+        g_lastTop = 0;
         SetWindowPos(g_wnd, HWND_TOP, left, top, g_size.cx, g_size.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         return true;
     }
@@ -1039,6 +1291,9 @@ bool Reposition() {
         edge = rtl ? wb.right : wb.left;
     POINT p{ edge, bar.top };
     ScreenToClient(g_taskbar, &p);
+    RECT client{};
+    GetClientRect(g_taskbar, &client);
+    int top = std::max(0, (int)(client.bottom - g_size.cy) / 2);
     int left = p.x - g_size.cx - Px(2);
 
 
@@ -1062,14 +1317,15 @@ bool Reposition() {
     // Keep us above the taskbar's own content (our sibling windows).
     bool covered = GetWindow(g_wnd, GW_HWNDPREV) != nullptr;
     if (!covered && EqualRect(&tr, &g_lastTray) && EqualRect(&bar, &g_lastBar) && EqualRect(&wb, &g_lastWidgets) &&
-        g_lastW == g_size.cx && g_lastLeft == left)
+        g_lastW == g_size.cx && g_lastLeft == left && g_lastTop == top)
         return true;
     g_lastTray = tr;
     g_lastWidgets = wb;
     g_lastBar = bar;
     g_lastW = g_size.cx;
     g_lastLeft = left;
-    SetWindowPos(g_wnd, HWND_TOP, left, 0, g_size.cx, g_size.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    g_lastTop = top;
+    SetWindowPos(g_wnd, HWND_TOP, left, top, g_size.cx, g_size.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     return true;
 }
 
