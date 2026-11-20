@@ -31,7 +31,7 @@ std::map<std::wstring, RingTween> g_ringTweens;
 constexpr UINT_PTR kRingAnimationTimer = 4;
 std::wstring g_tipText;
 RECT g_lastTray{}, g_lastBar{}, g_lastWidgets{};
-int g_lastW = -1, g_lastDpi = 0, g_lastLeft = -1;
+int g_lastW = -1, g_lastDpi = 0, g_lastLeft = -1, g_lastTop = INT_MIN;
 SIZE g_size{};
 HINSTANCE g_inst;
 
@@ -44,6 +44,7 @@ struct Mirror {
     SIZE size{};
     int dpi = 0;
     int lastLeft = INT_MIN;  // client x it was last placed at; INT_MIN = not placed (hidden)
+    int lastTop = INT_MIN;
 };
 std::vector<Mirror> g_mirrors;
 // Which taskbars show the strip: "all", "main", or one monitor's id (MonitorId), e.g. only monitor 3.
@@ -435,12 +436,14 @@ void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
     const int barW = std::max(1, (int)(bar.right - bar.left));
     const int barH = std::max(1, (int)(bar.bottom - bar.top));
     const int count = std::max(1, (int)g_items.size());
-    const int pad = Px(5), gap = Px(7);
+    const int pad = Px(3), verticalPad = Px(3), gap = Px(4);
     const bool vertical = barH > barW;
-    const int diameter = std::max(Px(20), std::min(Px(34), (vertical ? barW : barH) - Px(8)));
-    const int stroke = std::max(Px(3), diameter / 8);
-    int W = vertical ? barW : pad * 2 + count * diameter + (count - 1) * gap;
-    int H = vertical ? pad * 2 + count * diameter + (count - 1) * gap : barH;
+    // Keep the ring close to the native notification-area glyph size instead of filling the taskbar height.
+    const int available = std::max(Px(16), (vertical ? barW : barH) - Px(12));
+    const int diameter = std::min(Px(22), available);
+    const int stroke = std::max(Px(2), diameter / 9);
+    int W = vertical ? diameter + pad * 2 : pad * 2 + count * diameter + (count - 1) * gap;
+    int H = vertical ? pad * 2 + count * diameter + (count - 1) * gap : diameter + verticalPad * 2;
     W = std::max(1, W);
     H = std::max(1, H);
     Canvas cv(W, H);
@@ -449,7 +452,7 @@ void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
     const Rgb track{ 69, 73, 78 };
     const Rgb green{ 42, 215, 112 };
     const Rgb white{ 248, 250, 252 };
-    FillRoundedPlate(cv, plate, Px(8));
+    FillRoundedPlate(cv, plate, Px(6));
     if (hover) {
         // Subtle hover feedback; the dark plate remains the defining appearance.
         for (int y = Px(2); y < H - Px(2); ++y)
@@ -457,13 +460,13 @@ void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
                 cv.Blend(x, y, Rgb{ 255, 255, 255 }, 10);
     }
 
-    HFONT icons = MakeFont(Px(15), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
-    HFONT status = MakeFont(Px(9), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
+    HFONT icons = MakeFont(Px(11), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
+    HFONT status = MakeFont(Px(7), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
     for (int i = 0; i < count; ++i) {
         const bool placeholder = g_items.empty();
         const WidgetItem* item = placeholder ? nullptr : &g_items[(size_t)i];
         const int cx = vertical ? W / 2 : pad + diameter / 2 + i * (diameter + gap);
-        const int cy = vertical ? pad + diameter / 2 + i * (diameter + gap) : H / 2;
+        const int cy = vertical ? pad + diameter / 2 + i * (diameter + gap) : verticalPad + diameter / 2;
         const double radius = diameter * 0.5 - stroke * 0.5 - Px(1);
         int alpha = item && item->dim ? 145 : 255;
         DrawRingTrack(cv, cx, cy, radius, stroke, track, 255);
@@ -833,10 +836,14 @@ void PositionMirror(Mirror& m) {
     if (!known || m.size.cx <= 0 || left < minLeft) { HideMirror(m); return; }
     POINT p{ left, bar.top };
     ScreenToClient(m.bar, &p);
+    RECT client{};
+    GetClientRect(m.bar, &client);
+    int top = std::max(0, (int)(client.bottom - m.size.cy) / 2);
     bool covered = GetWindow(m.wnd, GW_HWNDPREV) != nullptr;
-    if (!covered && p.x == m.lastLeft) return;
+    if (!covered && p.x == m.lastLeft && top == m.lastTop) return;
     m.lastLeft = p.x;
-    SetWindowPos(m.wnd, HWND_TOP, p.x, 0, m.size.cx, m.size.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    m.lastTop = top;
+    SetWindowPos(m.wnd, HWND_TOP, p.x, top, m.size.cx, m.size.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 
 void AddTool(HWND w) {
@@ -1236,12 +1243,14 @@ bool Reposition() {
                 MoveWindow(g_rebar, tl.x, tl.y, rr.right - rr.left, top - tl.y, TRUE);
         }
         bool covered = GetWindow(g_wnd, GW_HWNDPREV) != nullptr;
-        if (!covered && EqualRect(&tr, &g_lastTray) && EqualRect(&bar, &g_lastBar) && g_lastW == g_size.cy && g_lastLeft == top)
+        if (!covered && EqualRect(&tr, &g_lastTray) && EqualRect(&bar, &g_lastBar) && g_lastW == g_size.cy &&
+            g_lastLeft == top && g_lastTop == 0)
             return true;
         g_lastTray = tr;
         g_lastBar = bar;
         g_lastW = g_size.cy;
         g_lastLeft = top;
+        g_lastTop = 0;
         SetWindowPos(g_wnd, HWND_TOP, left, top, g_size.cx, g_size.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         return true;
     }
@@ -1269,6 +1278,9 @@ bool Reposition() {
         edge = rtl ? wb.right : wb.left;
     POINT p{ edge, bar.top };
     ScreenToClient(g_taskbar, &p);
+    RECT client{};
+    GetClientRect(g_taskbar, &client);
+    int top = std::max(0, (int)(client.bottom - g_size.cy) / 2);
     int left = p.x - g_size.cx - Px(2);
 
 
@@ -1292,14 +1304,15 @@ bool Reposition() {
     // Keep us above the taskbar's own content (our sibling windows).
     bool covered = GetWindow(g_wnd, GW_HWNDPREV) != nullptr;
     if (!covered && EqualRect(&tr, &g_lastTray) && EqualRect(&bar, &g_lastBar) && EqualRect(&wb, &g_lastWidgets) &&
-        g_lastW == g_size.cx && g_lastLeft == left)
+        g_lastW == g_size.cx && g_lastLeft == left && g_lastTop == top)
         return true;
     g_lastTray = tr;
     g_lastWidgets = wb;
     g_lastBar = bar;
     g_lastW = g_size.cx;
     g_lastLeft = left;
-    SetWindowPos(g_wnd, HWND_TOP, left, 0, g_size.cx, g_size.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    g_lastTop = top;
+    SetWindowPos(g_wnd, HWND_TOP, left, top, g_size.cx, g_size.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     return true;
 }
 
