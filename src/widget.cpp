@@ -434,10 +434,11 @@ void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
     const int barH = std::max(1, (int)(bar.bottom - bar.top));
     const int count = std::max(1, (int)g_items.size());
     const int pad = Px(5), gap = Px(7);
-    const int diameter = std::max(Px(20), std::min(Px(34), (g_vertical ? barW : barH) - Px(8)));
+    const bool vertical = barH > barW;
+    const int diameter = std::max(Px(20), std::min(Px(34), (vertical ? barW : barH) - Px(8)));
     const int stroke = std::max(Px(3), diameter / 8);
-    int W = g_vertical ? barW : pad * 2 + count * diameter + (count - 1) * gap;
-    int H = g_vertical ? pad * 2 + count * diameter + (count - 1) * gap : barH;
+    int W = vertical ? barW : pad * 2 + count * diameter + (count - 1) * gap;
+    int H = vertical ? pad * 2 + count * diameter + (count - 1) * gap : barH;
     W = std::max(1, W);
     H = std::max(1, H);
     Canvas cv(W, H);
@@ -459,8 +460,8 @@ void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
     for (int i = 0; i < count; ++i) {
         const bool placeholder = g_items.empty();
         const WidgetItem* item = placeholder ? nullptr : &g_items[(size_t)i];
-        const int cx = g_vertical ? W / 2 : pad + diameter / 2 + i * (diameter + gap);
-        const int cy = g_vertical ? pad + diameter / 2 + i * (diameter + gap) : H / 2;
+        const int cx = vertical ? W / 2 : pad + diameter / 2 + i * (diameter + gap);
+        const int cy = vertical ? pad + diameter / 2 + i * (diameter + gap) : H / 2;
         const double radius = diameter * 0.5 - stroke * 0.5 - Px(1);
         int alpha = item && item->dim ? 145 : 255;
         DrawRingTrack(cv, cx, cy, radius, stroke, track, 255);
