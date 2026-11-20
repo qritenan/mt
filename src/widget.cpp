@@ -1,11 +1,14 @@
 #include "widget.h"
 
 #include "i18n.h"
+#include "ring_geometry.h"
 
 #include <commctrl.h>
 #include <uiautomation.h>
 #include <algorithm>
 #include <climits>
+#include <cmath>
+#include <map>
 
 namespace {
 
@@ -14,8 +17,17 @@ UINT g_clickMsg;
 bool g_light, g_hover;
 bool g_background;  // opaque rounded plate behind the text, for transparent / restyled taskbars
 bool g_stacked;     // icon above the percentage (menu option, PR #525)
+widget::DisplayStyle g_displayStyle = widget::DisplayStyle::Numeric;
 bool g_vertical;    // the primary taskbar is docked left or right: one block per device, stacked (PR #321)
 std::vector<WidgetItem> g_items;
+struct RingTween {
+    double from = 0.0;
+    double to = 0.0;
+    ULONGLONG started = 0;
+    bool active = false;
+};
+std::map<std::wstring, RingTween> g_ringTweens;
+constexpr UINT_PTR kRingAnimationTimer = 4;
 std::wstring g_tipText;
 RECT g_lastTray{}, g_lastBar{}, g_lastWidgets{};
 int g_lastW = -1, g_lastDpi = 0, g_lastLeft = -1;
@@ -344,6 +356,153 @@ struct Canvas {
             for (int i = 0; i < m.w; i++) Blend(x + i, y + j, c, m.a[j * m.w + i] * alpha / 255);
     }
 };
+double RingProgress(const WidgetItem& item) {
+    if (item.percent < 0 || !item.connected || item.key.empty()) return item.percent >= 0 && item.connected ? item.percent : -1.0;
+    auto it = g_ringTweens.find(item.key);
+    if (it == g_ringTweens.end()) return ring_geometry::ClampPercent(item.percent);
+    const RingTween& tween = it->second;
+    if (!tween.active) return tween.to;
+    double t = (GetTickCount64() - tween.started) / 420.0;
+    return ring_geometry::Interpolate(tween.from, tween.to, t);
+}
+
+void BlendCoverage(Canvas& cv, int x, int y, Rgb color, double coverage, int alpha = 255) {
+    if (coverage <= 0.0) return;
+    int a = (int)std::lround(std::clamp(coverage, 0.0, 1.0) * alpha);
+    cv.Blend(x, y, color, a);
+}
+
+void DrawRingTrack(Canvas& cv, int cx, int cy, double radius, double thickness, Rgb color, int alpha) {
+    const double half = thickness * 0.5;
+    int extent = (int)std::ceil(radius + half + 1.0);
+    for (int y = std::max(0, cy - extent); y <= std::min(cv.h - 1, cy + extent); ++y) {
+        for (int x = std::max(0, cx - extent); x <= std::min(cv.w - 1, cx + extent); ++x) {
+            double dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+            double error = std::abs(std::hypot(dx, dy) - radius);
+            BlendCoverage(cv, x, y, color, half + 0.5 - error, alpha);
+        }
+    }
+}
+
+// Draws a clockwise arc from twelve o'clock with antialiased, round end caps.
+void DrawRingProgress(Canvas& cv, int cx, int cy, double radius, double thickness, int percent, Rgb color, int alpha) {
+    percent = ring_geometry::ClampPercent(percent);
+    if (percent <= 0) return;
+    if (percent >= 100) {
+        DrawRingTrack(cv, cx, cy, radius, thickness, color, alpha);
+        return;
+    }
+    const double half = thickness * 0.5;
+    const double sweep = ring_geometry::SweepRadians(percent);
+    const double endX = cx + radius * std::sin(sweep);
+    const double endY = cy - radius * std::cos(sweep);
+    const double startX = cx, startY = cy - radius;
+    int extent = (int)std::ceil(radius + half + 1.0);
+    for (int y = std::max(0, cy - extent); y <= std::min(cv.h - 1, cy + extent); ++y) {
+        for (int x = std::max(0, cx - extent); x <= std::min(cv.w - 1, cx + extent); ++x) {
+            double px = x + 0.5, py = y + 0.5;
+            double dx = px - cx, dy = py - cy;
+            double angle = std::atan2(dx, -dy);
+            if (angle < 0.0) angle += 2.0 * ring_geometry::kPi;
+            double error = 1e9;
+            if (angle <= sweep) error = std::abs(std::hypot(dx, dy) - radius);
+            double es = std::hypot(px - startX, py - startY);
+            double ee = std::hypot(px - endX, py - endY);
+            error = std::min(error, std::min(es, ee));
+            BlendCoverage(cv, x, y, color, half + 0.5 - error, alpha);
+        }
+    }
+}
+
+void FillRoundedPlate(Canvas& cv, Rgb color, int radius) {
+    radius = std::clamp(radius, 0, std::min(cv.w, cv.h) / 2);
+    for (int y = 0; y < cv.h; ++y) {
+        for (int x = 0; x < cv.w; ++x) {
+            int qx = x < radius ? radius - x : (x >= cv.w - radius ? x - (cv.w - radius - 1) : 0);
+            int qy = y < radius ? radius - y : (y >= cv.h - radius ? y - (cv.h - radius - 1) : 0);
+            double d = std::hypot((double)qx, (double)qy);
+            if ((qx == 0 || qy == 0) || d <= radius + 0.5)
+                BlendCoverage(cv, x, y, color, qx == 0 || qy == 0 ? 1.0 : radius + 0.5 - d);
+        }
+    }
+}
+
+void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
+    RECT bar{};
+    GetClientRect(taskbar, &bar);
+    const int barW = std::max(1, (int)(bar.right - bar.left));
+    const int barH = std::max(1, (int)(bar.bottom - bar.top));
+    const int count = std::max(1, (int)g_items.size());
+    const int pad = Px(5), gap = Px(7);
+    const int diameter = std::max(Px(20), std::min(Px(34), (g_vertical ? barW : barH) - Px(8)));
+    const int stroke = std::max(Px(3), diameter / 8);
+    int W = g_vertical ? barW : pad * 2 + count * diameter + (count - 1) * gap;
+    int H = g_vertical ? pad * 2 + count * diameter + (count - 1) * gap : barH;
+    W = std::max(1, W);
+    H = std::max(1, H);
+    Canvas cv(W, H);
+    for (auto& p : cv.px) p = 0x01000000;
+    const Rgb plate{ 30, 32, 35 };
+    const Rgb track{ 69, 73, 78 };
+    const Rgb green{ 42, 215, 112 };
+    const Rgb white{ 248, 250, 252 };
+    FillRoundedPlate(cv, plate, Px(8));
+    if (hover) {
+        // Subtle hover feedback; the dark plate remains the defining appearance.
+        for (int y = Px(2); y < H - Px(2); ++y)
+            for (int x = Px(2); x < W - Px(2); ++x)
+                cv.Blend(x, y, Rgb{ 255, 255, 255 }, 10);
+    }
+
+    HFONT icons = MakeFont(Px(15), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
+    HFONT status = MakeFont(Px(9), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
+    for (int i = 0; i < count; ++i) {
+        const bool placeholder = g_items.empty();
+        const WidgetItem* item = placeholder ? nullptr : &g_items[(size_t)i];
+        const int cx = g_vertical ? W / 2 : pad + diameter / 2 + i * (diameter + gap);
+        const int cy = g_vertical ? pad + diameter / 2 + i * (diameter + gap) : H / 2;
+        const double radius = diameter * 0.5 - stroke * 0.5 - Px(1);
+        int alpha = item && item->dim ? 145 : 255;
+        DrawRingTrack(cv, cx, cy, radius, stroke, track, 255);
+        double progress = item ? RingProgress(*item) : -1.0;
+        if (progress >= 0.0) DrawRingProgress(cv, cx, cy, radius, stroke, (int)std::lround(progress), green, alpha);
+
+        wchar_t glyph = placeholder ? kBatteryUnknown : Glyph(item->kind, item->bluetooth);
+        Mask icon = RenderMask(std::wstring(1, glyph), icons, false);
+        cv.Draw(icon, cx - icon.w / 2, cy - icon.h / 2, white, alpha);
+
+        if (item && (item->charging || item->full)) {
+            wchar_t mark = item->full ? kCheck : kBolt;
+            Mask badge = RenderMask(std::wstring(1, mark), status, false);
+            int bx = cx + (int)std::lround(radius * 0.62) - badge.w / 2;
+            int by = cy - (int)std::lround(radius * 0.78) - badge.h / 2;
+            cv.Draw(badge, bx, by, item->full ? green : white, alpha);
+        }
+    }
+    DeleteObject(icons);
+    DeleteObject(status);
+
+    HDC screen = GetDC(nullptr);
+    HDC mem = CreateCompatibleDC(screen);
+    BITMAPINFO bi{};
+    bi.bmiHeader = { sizeof(BITMAPINFOHEADER), W, -H, 1, 32, BI_RGB };
+    void* bits = nullptr;
+    HBITMAP bmp = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (bmp && bits) {
+        memcpy(bits, cv.px.data(), (size_t)W * H * 4);
+        HGDIOBJ ob = SelectObject(mem, bmp);
+        size = { W, H };
+        SIZE sz{ W, H };
+        POINT src{ 0, 0 };
+        BLENDFUNCTION bf{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+        UpdateLayeredWindow(wnd, screen, nullptr, &sz, mem, &src, 0, &bf, ULW_ALPHA);
+        SelectObject(mem, ob);
+        DeleteObject(bmp);
+    }
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+}
+
 
 // Soft glow around a glyph, like a lit RGB device: the coverage mask padded by r pixels, box-blurred
 // twice and brightened so a thin icon outline still gives a visible glow.
@@ -520,6 +679,10 @@ std::vector<Piece> Layout(int barW, int barH, int& width, int& height) {
 
 // Draws the strip for one window: the primary one or a mirror on a secondary taskbar.
 void PaintStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
+    if (g_displayStyle == widget::DisplayStyle::Ring) {
+        PaintRingStrip(wnd, taskbar, hover, size);
+        return;
+    }
     RECT bar;
     GetClientRect(taskbar, &bar);
     int W = 0, H = 0;
@@ -820,6 +983,22 @@ void SetHover(HWND h, bool on) {
 }
 
 LRESULT CALLBACK WidgetProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_TIMER && wp == kRingAnimationTimer) {
+        bool active = false;
+        const ULONGLONG now = GetTickCount64();
+        for (auto& [key, tween] : g_ringTweens) {
+            if (!tween.active) continue;
+            if (now - tween.started >= 420) {
+                tween.from = tween.to;
+                tween.active = false;
+            } else {
+                active = true;
+            }
+        }
+        PaintAll();
+        if (!active) KillTimer(h, kRingAnimationTimer);
+        return 0;
+    }
     switch (msg) {
         case WM_MOUSEMOVE: {
             TRACKMOUSEEVENT t{ sizeof(t), TME_LEAVE, h, 0 };
@@ -919,6 +1098,36 @@ void Destroy() {
 bool Alive() { return g_wnd && IsWindow(g_wnd) && g_taskbar && IsWindow(g_taskbar); }
 
 void SetItems(const std::vector<WidgetItem>& items, const std::wstring& tooltip) {
+    const ULONGLONG now = GetTickCount64();
+    std::map<std::wstring, bool> live;
+    bool animate = false;
+    for (const auto& item : items) {
+        if (item.key.empty()) continue;
+        live[item.key] = true;
+        if (item.percent < 0 || !item.connected) continue;
+        const double target = ring_geometry::ClampPercent(item.percent);
+        auto it = g_ringTweens.find(item.key);
+        if (it == g_ringTweens.end()) {
+            g_ringTweens[item.key] = { target, target, now, false };
+        } else {
+            RingTween& tween = it->second;
+            double current = tween.active
+                ? ring_geometry::Interpolate(tween.from, tween.to, (now - tween.started) / 420.0)
+                : tween.to;
+            if (std::abs(current - target) >= 0.01) {
+                tween.from = current;
+                tween.to = target;
+                tween.started = now;
+                tween.active = true;
+                animate = true;
+            }
+        }
+    }
+    for (auto it = g_ringTweens.begin(); it != g_ringTweens.end();) {
+        if (!live.count(it->first)) it = g_ringTweens.erase(it);
+        else ++it;
+    }
+    if (animate && g_wnd) SetTimer(g_wnd, kRingAnimationTimer, 16, nullptr);
     g_items = items;
     if (tooltip != g_tipText && g_tip) {
         g_tipText = tooltip;
@@ -949,6 +1158,18 @@ void SetBackground(bool on) {
 
 void SetStacked(bool on) {
     g_stacked = on;
+    PaintAll();
+    if (g_wnd) Reposition();
+}
+
+void SetDisplayStyle(DisplayStyle style) {
+    if (g_displayStyle == style) return;
+    g_displayStyle = style;
+    for (auto& [key, tween] : g_ringTweens) {
+        tween.from = tween.to;
+        tween.active = false;
+    }
+    if (g_wnd) KillTimer(g_wnd, kRingAnimationTimer);
     PaintAll();
     if (g_wnd) Reposition();
 }
