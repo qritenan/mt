@@ -48,6 +48,7 @@ std::vector<DeviceStatus> PollAllDevices() {
                         ctx.colls.end());
     PollSinowealthReceiver(ctx);
     PollGlorious(ctx);
+    PollR11Ultra(ctx);
     PollAula(ctx);       // before Kysona (shares the 3554 vendor id) and SONiX (shares 05AC:024F)
     PollAulaMouse(ctx);
     PollEweadn(ctx);     // EWEADN S7 / S9 mice on 372E:103D / 1027 (AULA keeps 372E:106C)

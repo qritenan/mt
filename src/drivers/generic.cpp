@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cwctype>
 #include <map>
 
 namespace {
@@ -358,6 +359,13 @@ void PollBluetooth(PollContext& ctx) {
             }
             waited |= justStarted;
             if (got) ApplyFastPair(s, b);
+        }
+        std::wstring normalized = s.name;
+        for (auto& ch : normalized) ch = towlower(ch);
+        if (normalized == L"major iv" || normalized == L"marshall major iv" ||
+            normalized == L"major 4" || normalized == L"marshall major 4") {
+            s.name = L"Marshall Major IV";
+            s.kind = DeviceKind::Headset;
         }
         ctx.out.push_back(s);
         ctx.btContainers.insert(cid);
