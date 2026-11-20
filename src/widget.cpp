@@ -417,13 +417,14 @@ void DrawRingProgress(Canvas& cv, int cx, int cy, double radius, double thicknes
     }
 }
 
-// Fills a rounded rectangle inset from the canvas edges. `inset` keeps the plate clear of the
-// taskbar edges so it reads as a floating capsule; `alpha` lets the same helper paint the hover tint.
-void FillRoundedPlate(Canvas& cv, Rgb color, int radius, int inset = 0, int alpha = 255) {
-    const int x0 = std::clamp(inset, 0, cv.w);
-    const int y0 = std::clamp(inset, 0, cv.h);
-    const int x1 = std::max(x0, cv.w - inset);
-    const int y1 = std::max(y0, cv.h - inset);
+// Fills a rounded rectangle inset from the canvas edges. The separate x/y insets let the ring
+// renderer keep the window at full taskbar height (a layered child window with a non-zero y offset
+// is not composited reliably over the taskbar) while drawing a compact floating capsule inside it.
+void FillRoundedPlate(Canvas& cv, Rgb color, int radius, int insetX = 0, int insetY = 0, int alpha = 255) {
+    const int x0 = std::clamp(insetX, 0, cv.w);
+    const int y0 = std::clamp(insetY, 0, cv.h);
+    const int x1 = std::max(x0, cv.w - insetX);
+    const int y1 = std::max(y0, cv.h - insetY);
     radius = std::clamp(radius, 0, std::min(x1 - x0, y1 - y0) / 2);
     for (int y = y0; y < y1; ++y) {
         for (int x = x0; x < x1; ++x) {
@@ -449,7 +450,9 @@ void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
     const int diameter = std::min(Px(16), available);
     const int stroke = std::max(1, diameter / 8);
     int W = vertical ? diameter + pad * 2 : pad * 2 + count * diameter + (count - 1) * gap;
-    int H = vertical ? pad * 2 + count * diameter + (count - 1) * gap : diameter + verticalPad * 2;
+    // Over the taskbar, keep the window at the bar's full height and centre the capsule inside it:
+    // a layered child window offset vertically does not composite reliably on all taskbars.
+    int H = vertical ? pad * 2 + count * diameter + (count - 1) * gap : barH;
     W = std::max(1, W);
     H = std::max(1, H);
     Canvas cv(W, H);
@@ -458,10 +461,13 @@ void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
     const Rgb track{ 69, 73, 78 };
     const Rgb green{ 42, 215, 112 };
     const Rgb white{ 248, 250, 252 };
-    FillRoundedPlate(cv, plate, Px(4));
+    const int capsuleW = diameter + pad * 2, capsuleH = diameter + verticalPad * 2;
+    const int plateX = vertical ? (W - capsuleW) / 2 : 0;
+    const int plateY = vertical ? 0 : (H - capsuleH) / 2;
+    FillRoundedPlate(cv, plate, Px(4), plateX, plateY);
     if (hover) {
         // Hover tint follows the same rounded shape, so it never lightens the transparent corners.
-        FillRoundedPlate(cv, Rgb{ 255, 255, 255 }, Px(4), 0, g_light ? 22 : 16);
+        FillRoundedPlate(cv, Rgb{ 255, 255, 255 }, Px(4), plateX, plateY, g_light ? 22 : 16);
     }
 
     HFONT icons = MakeFont(Px(8), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
@@ -470,7 +476,7 @@ void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
         const bool placeholder = g_items.empty();
         const WidgetItem* item = placeholder ? nullptr : &g_items[(size_t)i];
         const int cx = vertical ? W / 2 : pad + diameter / 2 + i * (diameter + gap);
-        const int cy = vertical ? pad + diameter / 2 + i * (diameter + gap) : verticalPad + diameter / 2;
+        const int cy = vertical ? pad + diameter / 2 + i * (diameter + gap) : H / 2;
         const double radius = diameter * 0.5 - stroke * 0.5 - Px(1);
         int alpha = item && item->dim ? 145 : 255;
         const bool unknown = item && item->percent < 0;
