@@ -32,7 +32,7 @@ std::vector<HidColl> EnumHid() {
         HidColl c;
         c.path = det->DevicePath;
         HIDD_ATTRIBUTES a{ sizeof(a) };
-        if (HidD_GetAttributes(h, &a)) { c.vid = a.VendorID; c.pid = a.ProductID; }
+        if (HidD_GetAttributes(h, &a)) { c.vid = a.VendorID; c.pid = a.ProductID; c.version = a.VersionNumber; }
         PHIDP_PREPARSED_DATA pp;
         if (HidD_GetPreparsedData(h, &pp)) { HidP_GetCaps(pp, &c.caps); HidD_FreePreparsedData(pp); }
         CloseHandle(h);

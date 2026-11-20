@@ -75,6 +75,7 @@ void PollZenith(PollContext& ctx);    // Zenith Pro mouse (260D:1114 receiver, 1
 void PollDarmoshark(PollContext& ctx); // Darmoshark M3 over its 2.4 GHz receiver
 void PollDarmosharkNrf(PollContext& ctx); // Darmoshark M3S Pro on the Nordic 1K receiver (1915:0723)
 void PollAtkSerial(PollContext& ctx); // ATK N9 Pro / N9 Ultra headsets (virtual COM port)
+void PollAtkMercury(PollContext& ctx); // ATK Mercury I / M1 headset (373B:107C receiver)
 void PollKeychron(PollContext& ctx);  // Keychron mice (incl. Ultra-Link 8K receiver), Nape Pro trackball (Link-KM receiver)
 void PollCherry(PollContext& ctx);    // CHERRY MX 3.0S Wireless (FF1C channel) and the Cherry XTRFY 1K mouse receiver (046A:0330, CompX protocol)
 void PollNuphy(PollContext& ctx);     // NuPhy WH80 over USB cable (19F5:A011)

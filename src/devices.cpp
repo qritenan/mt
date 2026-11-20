@@ -56,6 +56,7 @@ std::vector<DeviceStatus> PollAllDevices() {
     PollDarmoshark(ctx);
     PollDarmosharkNrf(ctx);
     PollAtkSerial(ctx);  // before Kysona, which shares the ATK vendor id
+    PollAtkMercury(ctx); // before Kysona, which must not send mouse queries to the Mercury receiver
     PollAtkKeyboard(ctx);
     PollRedragonEvision(ctx);
     PollPulsar(ctx);     // before Kysona, which also scans the 3710 vendor id

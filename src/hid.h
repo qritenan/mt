@@ -33,7 +33,7 @@ struct HIDP_CAPS {
 struct HidColl {
     std::wstring path;
     std::wstring product;  // filled by the Linux backend from sysfs; unused on Windows
-    USHORT vid = 0, pid = 0;
+    USHORT vid = 0, pid = 0, version = 0;
     int iface = -1;  // USB interface number (MI_xx in the path), -1 when unknown
     HIDP_CAPS caps{};
     USHORT page() const { return caps.UsagePage; }
