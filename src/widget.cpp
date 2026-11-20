@@ -727,6 +727,17 @@ std::wstring MonitorId(HWND bar) {
     return mi.szDevice;
 }
 
+// The model part of a monitor id: "AUO7EAD" in \\?\DISPLAY#AUO7EAD#4&300ab7d&0&UID8388688#{...}.
+// A laptop panel gets a different instance path when a MUX / Advanced Optimus switch moves it between the
+// integrated and the NVIDIA GPU, so its full id changes from one boot to the next; this part does not.
+std::wstring MonitorModel(const std::wstring& id) {
+    size_t a = id.find(L"DISPLAY#");
+    if (a == std::wstring::npos) return L"";
+    a += 8;
+    size_t b = id.find(L'#', a);
+    return b == std::wstring::npos ? L"" : id.substr(a, b - a);
+}
+
 // "Display 3 (right)": the number Windows gives the display and where it sits next to the main one.
 std::wstring MonitorLabel(HWND bar) {
     MONITORINFOEXW mi{}, pm{};
@@ -766,12 +777,13 @@ void SyncMirrors() {
     if (g_choice == L"all") {
         bars = all;
     } else if (g_choice != L"main") {
-        for (HWND b : all)
-            if (MonitorId(b) == g_choice) {
-                bars.push_back(b);
-                chosenFound = true;
-                break;
-            }
+        std::vector<std::wstring> ids;
+        for (HWND b : all) ids.push_back(MonitorId(b));
+        int i = widget::FindMonitor(ids, g_choice);
+        if (i >= 0) {
+            bars.push_back(all[i]);
+            chosenFound = true;
+        }
     }
     SetPrimaryHidden(chosenFound);
     for (auto it = g_mirrors.begin(); it != g_mirrors.end();) {
@@ -957,6 +969,20 @@ void SetMonitorChoice(const std::wstring& choice) {
     g_choice = choice.empty() ? L"all" : choice;
     SyncMirrors();  // adds, removes or hides strips right away
     if (g_wnd) Reposition();
+}
+
+int FindMonitor(const std::vector<std::wstring>& ids, const std::wstring& choice) {
+    for (size_t i = 0; i < ids.size(); i++)
+        if (ids[i] == choice) return (int)i;
+    std::wstring model = MonitorModel(choice);
+    int found = -1;
+    if (!model.empty())
+        for (size_t i = 0; i < ids.size(); i++)
+            if (MonitorModel(ids[i]) == model) {
+                if (found >= 0) return -1;  // two monitors of that model: can't tell which one was chosen
+                found = (int)i;
+            }
+    return found;
 }
 
 std::vector<MonitorOption> OtherMonitors() {

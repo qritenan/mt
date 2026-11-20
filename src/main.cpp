@@ -868,9 +868,12 @@ void ShowMenu() {
         AppendMenuW(sub, f, ID_MONITOR_MAIN, T(L"Main monitor only"));
         UINT checked = g_widgetMonitor == L"main" ? ID_MONITOR_MAIN : ID_MONITOR_ALL;
         bool found = g_widgetMonitor == L"all" || g_widgetMonitor == L"main";
+        std::vector<std::wstring> ids;
+        for (const auto& mo : monitors) ids.push_back(mo.id);
+        int chosen = found ? -1 : widget::FindMonitor(ids, g_widgetMonitor);
         for (UINT i = 0; i < monitors.size(); i++) {
             AppendMenuW(sub, f, ID_MONITOR_FIRST + i, TF(L"{monitor} only", { { L"monitor", monitors[i].label } }).c_str());
-            if (monitors[i].id == g_widgetMonitor) { checked = ID_MONITOR_FIRST + i; found = true; }
+            if ((int)i == chosen) { checked = ID_MONITOR_FIRST + i; found = true; }
         }
         if (!found) {  // the chosen monitor is unplugged: the main taskbar shows the widget meanwhile
             AppendMenuW(sub, MF_STRING | MF_GRAYED, ID_MONITOR_FIRST + 31, T(L"Chosen monitor (not connected, shown on main)"));

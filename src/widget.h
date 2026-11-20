@@ -39,6 +39,10 @@ struct MonitorOption {
     std::wstring id;     // lasting monitor identity, stored in the settings
     std::wstring label;  // "Display 3 (right)"
 };
+// Index of the chosen monitor in `ids` (MonitorOption::id values), or -1 when it is not connected. A saved id
+// that matches no monitor exactly still matches the only connected monitor of the same model: a laptop panel's
+// id changes when a MUX / Advanced Optimus switch moves it to the other GPU.
+int FindMonitor(const std::vector<std::wstring>& ids, const std::wstring& choice);
 // The monitors other than the main one that have a horizontal taskbar (empty with one monitor).
 std::vector<MonitorOption> OtherMonitors();
 // Re-checks the taskbar layout and moves the widget if needed; call about once a second.
