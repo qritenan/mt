@@ -23,6 +23,7 @@ Show on the taskbar (icon + percentage) = Görev çubuğunda göster (simge + y�
 Show as tray icons = Bildirim alanında simge olarak göster
 Background behind taskbar text (for transparent taskbars) = Görev çubuğu yazısının arkasına zemin (saydam görev çubukları için)
 Icons above percentages (narrower) = Simgeler yüzdelerin üstünde (daha dar)
+At the left end of the taskbar = Görev çubuğunun en solunda
 All monitors = Tüm ekranlar
 Main monitor only = Yalnızca ana ekran
 {monitor} only = Yalnızca {monitor}

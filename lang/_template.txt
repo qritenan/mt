@@ -77,6 +77,7 @@ Show on the taskbar (icon + percentage) =
 Show as tray icons = 
 Background behind taskbar text (for transparent taskbars) = 
 Icons above percentages (narrower) = 
+At the left end of the taskbar = 
 All monitors = 
 Main monitor only = 
 {monitor} only = 
