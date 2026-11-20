@@ -9,6 +9,7 @@
 #include "drivers.h"
 
 #include <algorithm>
+#include <array>
 
 namespace {
 
@@ -26,23 +27,25 @@ BYTE KeyboardBatteryTid(USHORT pid) {
 
 enum class Rz { Ok, Offline, Unsupported, NoReply };
 
-Rz Command(HidDev& d, BYTE tid, BYTE cls, BYTE id, BYTE size, std::vector<BYTE>& args) {
+Rz Command(HidDev& d, BYTE tid, BYTE cls, BYTE id, BYTE size, std::vector<BYTE>& args, BYTE firstArg = 0) {
     std::vector<BYTE> rep(91, 0);  // [0] = report id 0, then the 90-byte report
     BYTE* r = rep.data() + 1;
     r[1] = tid;
     r[5] = size;
     r[6] = cls;
     r[7] = id;
+    r[8] = firstArg;
     BYTE crc = 0;
     for (int i = 2; i < 88; i++) crc ^= r[i];
     r[88] = crc;
     std::vector<BYTE> resp;
     bool send = true;
     Rz res = Rz::NoReply;
-    for (int attempt = 0; attempt < 8; attempt++) {
+    const bool slotQuery = cls == 0x00 && id == 0xBF;
+    for (int attempt = 0; attempt < (slotQuery ? 4 : 8); attempt++) {
         if (send && !d.SetFeature(rep)) return Rz::NoReply;
-        // Wireless keyboards need about 5 ms (OpenRazer); a long wait lets Synapse replace the reply.
-        Sleep(KeyboardBatteryTid(d.coll().pid) ? 5 : (attempt == 0 ? 15 : 40));
+        // The slot list is local to the receiver. A long wait lets Synapse replace the reply.
+        Sleep(slotQuery || KeyboardBatteryTid(d.coll().pid) ? 5 : (attempt == 0 ? 15 : 40));
         send = true;
         res = Rz::NoReply;
         if (!d.GetFeature(0, resp) || resp.size() < 91) continue;
@@ -113,17 +116,97 @@ DeviceKind Kind(const std::vector<HidColl>& colls, USHORT vid, USHORT pid) {
     return KindFromCollections(colls, vid, pid);
 }
 
+struct ReceiverSlot {
+    USHORT pid;
+    BYTE tid;
+    bool active;
+};
+
+bool ReadReceiverSlots(HidDev& d, std::array<ReceiverSlot, 2>& slots) {
+    // HyperSpeed Multi-Device slot list (capture in OpenRazer issue #1892).
+    // Each entry is [active, PID high, PID low]. The mouse uses 1F and the keyboard uses 9F.
+    std::vector<BYTE> args;
+    if (Command(d, 0x1F, 0x00, 0xBF, 0x31, args, 0x10) != Rz::Ok || args[0] != slots.size())
+        return false;
+    if (args[1] > 1 || args[4] > 1) return false;
+    slots = {{
+        { static_cast<USHORT>((args[2] << 8) | args[3]), 0x1F, args[1] == 1 },
+        { static_cast<USHORT>((args[5] << 8) | args[6]), 0x9F, args[4] == 1 },
+    }};
+    // A vacant slot falls back to the normal single-device path.
+    return slots[0].pid && slots[0].pid != 0xFFFF && slots[1].pid && slots[1].pid != 0xFFFF &&
+           slots[0].pid != slots[1].pid;
+}
+
+std::wstring SlotName(const PollContext& ctx, USHORT pid, DeviceKind kind) {
+    for (const auto& c : ctx.colls) {
+        if (c.vid != 0x1532 || c.pid != pid) continue;
+        std::wstring name = HidProduct(c);
+        if (!name.empty()) return CleanName(name);
+    }
+    // A child on the shared receiver has no USB product string of its own.
+    switch (pid) {
+        case 0x00A8: return L"Razer Naga V2 Pro";
+        case 0x00DF: return L"Razer Viper V3 Pro SE";
+        case 0x0296: return L"Razer DeathStalker V2 Pro Tenkeyless";
+        case 0x02D5: return L"Razer BlackWidow V4 Tenkeyless HyperSpeed";
+    }
+    return std::wstring(kind == DeviceKind::Mouse ? L"Razer Mouse (" : L"Razer Keyboard (") + Hex4(pid) + L")";
+}
+
+void SetBatteryReading(DeviceStatus& s, HidDev& d, BYTE tid, Rz res, const std::vector<BYTE>& args) {
+    s.connected = res == Rz::Ok;
+    if (!s.connected) return;
+    s.percent = Clamp100((args[1] * 100 + 127) / 255);
+    std::vector<BYTE> ch;
+    if (Command(d, tid, 0x07, 0x84, 0x02, ch) == Rz::Ok) s.charging = ch[1] == 1;
+}
+
 }  // namespace
 
 void PollRazer(PollContext& ctx) {
     const auto firstRazer = ctx.out.size();
+    auto addReading = [&](const DeviceStatus& s, USHORT vid, USHORT pid) {
+        // The same device can answer through its cable, its receiver or a shared receiver.
+        auto existing = std::find_if(ctx.out.begin() + firstRazer, ctx.out.end(),
+                                     [&](const DeviceStatus& o) { return o.key == s.key || o.name == s.name; });
+        if (existing == ctx.out.end()) {
+            ctx.Add(s, vid, pid);
+        } else {
+            ctx.Claim(vid, pid);
+            if (!existing->connected && s.connected) {
+                existing->connected = true;
+                existing->percent = s.percent;
+            }
+            existing->charging |= s.charging;
+        }
+    };
     for (auto [vid, pid] : ctx.Products(0x1532)) {
+        DeviceKind kind = Kind(ctx.colls, vid, pid);
         for (const HidColl* c : ctx.Find(vid, pid, [](const HidColl& c) { return c.featLen() == 91; })) {
             HidDev d;
             if (!d.OpenFeatureOnly(*c)) continue;
+            std::vector<BYTE> args;
+            std::array<ReceiverSlot, 2> slots;
+            if ((kind == DeviceKind::Mouse || kind == DeviceKind::Keyboard) && ReadReceiverSlots(d, slots)) {
+                for (const auto& slot : slots) {
+                    auto res = slot.active ? Command(d, slot.tid, 0x07, 0x80, 0x02, args) : Rz::Offline;
+                    if (res != Rz::Ok && res != Rz::Offline) continue;
+                    DeviceStatus s;
+                    s.key = L"razer:" + Hex4(slot.pid);
+                    s.kind = slot.tid == 0x1F ? DeviceKind::Mouse : DeviceKind::Keyboard;
+                    s.name = SlotName(ctx, slot.pid, s.kind);
+                    s.via = L"Razer receiver";
+                    s.graceSec = 120;
+                    SetBatteryReading(s, d, slot.tid, res, args);
+                    addReading(s, vid, pid);
+                }
+                ctx.Claim(vid, pid);
+                break;
+            }
+
             Rz res = Rz::NoReply;
             BYTE tid = 0;
-            std::vector<BYTE> args;
             bool sawOffline = false;
             BYTE keyboardTid = KeyboardBatteryTid(pid);
             std::vector<BYTE> tids = keyboardTid ? std::vector<BYTE>{ keyboardTid } :
@@ -139,30 +222,12 @@ void PollRazer(PollContext& ctx) {
             DeviceStatus s;
             s.key = L"razer:" + Hex4(pid);
             s.name = CleanName(HidProduct(*c));
-            s.kind = Kind(ctx.colls, vid, pid);
+            s.kind = kind;
             if (s.kind == DeviceKind::Other) s.kind = GuessKind(s.name);
             s.via = L"Razer receiver";
             s.graceSec = 120;  // retain the last reading briefly when Synapse prevents a valid reply
-            if (res == Rz::Offline) {
-                s.connected = false;
-            } else {
-                s.percent = Clamp100((args[1] * 100 + 127) / 255);
-                std::vector<BYTE> ch;
-                if (Command(d, tid, 0x07, 0x84, 0x02, ch) == Rz::Ok) s.charging = ch[1] == 1;
-            }
-            // Cable + receiver can report the same device; keep a live reading over an offline receiver.
-            auto existing = std::find_if(ctx.out.begin() + firstRazer, ctx.out.end(),
-                                         [&](const DeviceStatus& o) { return o.name == s.name; });
-            if (existing == ctx.out.end()) {
-                ctx.Add(s, vid, pid);
-            } else {
-                ctx.Claim(vid, pid);
-                if (!existing->connected && s.connected) {
-                    existing->connected = true;
-                    existing->percent = s.percent;
-                }
-                existing->charging |= s.charging;
-            }
+            SetBatteryReading(s, d, tid, res, args);
+            addReading(s, vid, pid);
             break;
         }
     }
