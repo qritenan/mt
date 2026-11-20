@@ -42,6 +42,7 @@ int main() {
         {0x0C45, 0xFEFE},
         {0x0C45, 0xFDFD},
         {0x342D, 0xE479},
+        {0x342D, 0xE411}, // RSQ_20055_2.4G (issue #3808, interface 1)
         {0x342D, 0xE485},
         {0x342D, 0xE4BC},
         {0x342D, 0xE4C2},
@@ -64,6 +65,17 @@ int main() {
         assert(ctx.out[0].name == L"Keyboard" && ctx.out[0].graceSec == 1800);
         PollSonix(ctx); assert(opens == 1 && writes == 1);
     }
+    // RSQ_20055_2.4G reports SONiX FF60:0061 on MI_01 only.
+    for (int iface : {0, 2, 3, 4}) {
+        auto ctx = Poll(Collection(0x342D, 0xE411, iface), {{0x20, 1, 0, 73}});
+        assert(ctx.out.empty() && opens == 0 && writes == 0);
+    }
+    auto wrongSize = Collection(0x342D, 0xE411, 1);
+    --wrongSize.caps.InputReportByteLength;
+    assert(Poll(wrongSize, {{0x20, 1, 0, 73}}).out.empty() && opens == 0);
+    wrongSize = Collection(0x342D, 0xE411, 1);
+    --wrongSize.caps.OutputReportByteLength;
+    assert(Poll(wrongSize, {{0x20, 1, 0, 73}}).out.empty() && opens == 0);
     for (int level : {0, 1, 73, 100, 101, 255}) {
         auto ctx = Poll(Collection(), {{0x20, 1, 0, static_cast<BYTE>(level)}});
         bool connected = level >= 1 && level <= 100;
@@ -94,5 +106,5 @@ int main() {
     assert(Poll(Collection(), {}).out.empty() && writes == 0);
     openOk = true; writeOk = false;
     assert(Poll(Collection(), {}).out.empty() && writes == 2);
-    puts("SONiX driver tests passed (20 receiver IDs)");
+    puts("SONiX driver tests passed (21 receiver IDs, RSQ interface filtering)");
 }

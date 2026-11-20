@@ -4,6 +4,7 @@
 // are also matched by their vendor collection: usage page FF60 / usage 61, 33-byte input
 // and output reports (report id 0 + 32 bytes). These dongles require interface 3;
 // EPOMAKER P75 (342D:E479, request #2525, hardware untested) uses interface 1.
+// RSQ_20055_2.4G (342D:E411, issue #3808, untested) reports interface 1, FF60:0061, 33/33.
 //   request [20 01 00 ... sum]          sum = byte sum of the 31 bytes before it
 //   reply   [20 01 00 level ...]        level in percent
 // A reply is recognised by its first three bytes (the echoed command), as the AK820 Pro tools do; its
@@ -25,6 +26,7 @@ const Dongle kDongles[] = {
     { 0x0C45, 0xFEFE, 3 },
     { 0x0C45, 0xFDFD, 3 },
     { 0x342D, 0xE479, -1 },  // EPOMAKER P75 (hardware untested)
+    { 0x342D, 0xE411, 1 },   // RSQ_20055_2.4G (issue #3808, hardware untested)
     { 0x342D, 0xE485, -1 },  // RK Royal Kludge R75 (PR #2593, hardware untested)
     { 0x342D, 0xE4BC, -1 },  // Redragon Arlokks K742B (PR #2594, hardware untested)
     { 0x342D, 0xE4C2, -1 },  // M1 V5 VIA (PR #2595, hardware untested)
