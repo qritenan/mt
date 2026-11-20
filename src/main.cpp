@@ -483,6 +483,8 @@ std::wstring RingStatusText(const TrayEntry& e) {
         t = T(L"charging");
     else if (s.asleep)
         t = T(L"asleep");
+    else if (!s.levelText.empty())
+        t = T(s.levelText);  // coarse level words ("Low", "Full") carry no numeric percentage
     else if (s.percent < 0 && e.lastPct < 0)
         t = T(L"unknown");
     if (s.asleep && (s.charging || s.full)) t += std::wstring(L", ") + T(L"asleep");

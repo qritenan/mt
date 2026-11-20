@@ -417,15 +417,21 @@ void DrawRingProgress(Canvas& cv, int cx, int cy, double radius, double thicknes
     }
 }
 
-void FillRoundedPlate(Canvas& cv, Rgb color, int radius) {
-    radius = std::clamp(radius, 0, std::min(cv.w, cv.h) / 2);
-    for (int y = 0; y < cv.h; ++y) {
-        for (int x = 0; x < cv.w; ++x) {
-            int qx = x < radius ? radius - x : (x >= cv.w - radius ? x - (cv.w - radius - 1) : 0);
-            int qy = y < radius ? radius - y : (y >= cv.h - radius ? y - (cv.h - radius - 1) : 0);
+// Fills a rounded rectangle inset from the canvas edges. `inset` keeps the plate clear of the
+// taskbar edges so it reads as a floating capsule; `alpha` lets the same helper paint the hover tint.
+void FillRoundedPlate(Canvas& cv, Rgb color, int radius, int inset = 0, int alpha = 255) {
+    const int x0 = std::clamp(inset, 0, cv.w);
+    const int y0 = std::clamp(inset, 0, cv.h);
+    const int x1 = std::max(x0, cv.w - inset);
+    const int y1 = std::max(y0, cv.h - inset);
+    radius = std::clamp(radius, 0, std::min(x1 - x0, y1 - y0) / 2);
+    for (int y = y0; y < y1; ++y) {
+        for (int x = x0; x < x1; ++x) {
+            int qx = x < x0 + radius ? x0 + radius - x : (x >= x1 - radius ? x - (x1 - radius - 1) : 0);
+            int qy = y < y0 + radius ? y0 + radius - y : (y >= y1 - radius ? y - (y1 - radius - 1) : 0);
             double d = std::hypot((double)qx, (double)qy);
             if ((qx == 0 || qy == 0) || d <= radius + 0.5)
-                BlendCoverage(cv, x, y, color, qx == 0 || qy == 0 ? 1.0 : radius + 0.5 - d);
+                BlendCoverage(cv, x, y, color, qx == 0 || qy == 0 ? 1.0 : radius + 0.5 - d, alpha);
         }
     }
 }
@@ -448,16 +454,14 @@ void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
     H = std::max(1, H);
     Canvas cv(W, H);
     for (auto& p : cv.px) p = 0x01000000;
-    const Rgb plate{ 30, 32, 35 };
+    const Rgb plate{ 16, 18, 21 };
     const Rgb track{ 69, 73, 78 };
     const Rgb green{ 42, 215, 112 };
     const Rgb white{ 248, 250, 252 };
     FillRoundedPlate(cv, plate, Px(4));
     if (hover) {
-        // Subtle hover feedback; the dark plate remains the defining appearance.
-        for (int y = Px(2); y < H - Px(2); ++y)
-            for (int x = Px(2); x < W - Px(2); ++x)
-                cv.Blend(x, y, Rgb{ 255, 255, 255 }, 10);
+        // Hover tint follows the same rounded shape, so it never lightens the transparent corners.
+        FillRoundedPlate(cv, Rgb{ 255, 255, 255 }, Px(4), 0, g_light ? 22 : 16);
     }
 
     HFONT icons = MakeFont(Px(8), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
@@ -469,7 +473,8 @@ void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
         const int cy = vertical ? pad + diameter / 2 + i * (diameter + gap) : verticalPad + diameter / 2;
         const double radius = diameter * 0.5 - stroke * 0.5 - Px(1);
         int alpha = item && item->dim ? 145 : 255;
-        DrawRingTrack(cv, cx, cy, radius, stroke, track, 255);
+        const bool unknown = item && item->percent < 0;
+        DrawRingTrack(cv, cx, cy, radius, stroke, track, unknown ? 120 : 255);
         double progress = item ? RingProgress(*item) : -1.0;
         if (progress >= 0.0) DrawRingProgress(cv, cx, cy, radius, stroke, (int)std::lround(progress), green, alpha);
 
@@ -478,11 +483,13 @@ void PaintRingStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
         cv.Draw(icon, cx - icon.w / 2, cy - icon.h / 2, white, alpha);
 
         if (item && (item->charging || item->full)) {
+            // Badge just outside the ring at the upper right, clear of the progress stroke.
             wchar_t mark = item->full ? kCheck : kBolt;
             Mask badge = RenderMask(std::wstring(1, mark), status, false);
-            int bx = cx + (int)std::lround(radius * 0.62) - badge.w / 2;
-            int by = cy - (int)std::lround(radius * 0.78) - badge.h / 2;
-            cv.Draw(badge, bx, by, item->full ? green : white, alpha);
+            const double diag = (radius + stroke * 0.5) * 0.74;
+            int bx = cx + (int)std::lround(diag) - badge.w / 2;
+            int by = cy - (int)std::lround(diag) - badge.h / 2;
+            cv.Draw(badge, bx, by, white, alpha);
         }
     }
     DeleteObject(icons);
