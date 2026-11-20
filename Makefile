@@ -40,6 +40,8 @@ test: test-update-core test-update-win test-update-signature
 	./build/device_aliases_test.exe
 	$(CXX) -std=c++17 -O2 -Wall -Wextra tests/alert_rules_test.cpp -o build/alert_rules_test.exe
 	./build/alert_rules_test.exe
+	$(CXX) -std=c++17 -O2 -Wall -Wextra tests/refresh_policy_test.cpp -o build/refresh_policy_test.exe
+	./build/refresh_policy_test.exe
 	$(CXX) -std=c++17 -O2 -Wall -Wextra tests/history_model_test.cpp -o build/history_model_test.exe
 	./build/history_model_test.exe
 	$(CXX) -std=c++17 -O2 -Wall -Wextra tests/runtime_estimate_test.cpp -o build/runtime_estimate_test.exe

@@ -20,6 +20,8 @@ std::wstring g_tipText;
 RECT g_lastTray{}, g_lastBar{}, g_lastWidgets{};
 int g_lastW = -1, g_lastDpi = 0, g_lastLeft = -1;
 SIZE g_size{};
+SIZE g_paintedBarClient{};
+bool g_painted = false;
 HINSTANCE g_inst;
 
 // Copies of the strip on secondary-monitor taskbars (Shell_SecondaryTrayWnd), so the levels stay visible
@@ -28,6 +30,7 @@ HINSTANCE g_inst;
 struct Mirror {
     HWND bar = nullptr, wnd = nullptr;
     bool hover = false;
+    bool painted = false;
     SIZE size{};
     int dpi = 0;
     int lastLeft = INT_MIN;  // client x it was last placed at; INT_MIN = not placed (hidden)
@@ -519,12 +522,14 @@ std::vector<Piece> Layout(int barW, int barH, int& width, int& height) {
 }
 
 // Draws the strip for one window: the primary one or a mirror on a secondary taskbar.
-void PaintStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
-    RECT bar;
-    GetClientRect(taskbar, &bar);
+// Returns true only when the layered surface was updated with a valid non-empty size.
+bool PaintStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
+    if (!wnd || !taskbar || !IsWindow(wnd) || !IsWindow(taskbar)) return false;
+    RECT bar{};
+    if (!GetClientRect(taskbar, &bar)) return false;
     int W = 0, H = 0;
     auto pieces = Layout(bar.right - bar.left, bar.bottom - bar.top, W, H);
-    if (W <= 0 || H <= 0) return;
+    if (W <= 0 || H <= 0) return false;
     Canvas cv(W, H);
 
     // Nearly transparent background so the whole strip receives mouse input,
@@ -577,34 +582,54 @@ void PaintStrip(HWND wnd, HWND taskbar, bool hover, SIZE& size) {
     }
 
     HDC screen = GetDC(nullptr);
+    if (!screen) return false;
     HDC mem = CreateCompatibleDC(screen);
+    if (!mem) {
+        ReleaseDC(nullptr, screen);
+        return false;
+    }
     BITMAPINFO bi{};
     bi.bmiHeader = { sizeof(BITMAPINFOHEADER), W, -H, 1, 32, BI_RGB };
     void* bits = nullptr;
     HBITMAP bmp = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bmp || !bits) {
+        if (bmp) DeleteObject(bmp);
+        DeleteDC(mem);
+        ReleaseDC(nullptr, screen);
+        return false;
+    }
     memcpy(bits, cv.px.data(), (size_t)W * H * 4);
     HGDIOBJ ob = SelectObject(mem, bmp);
-    size = { W, H };
     SIZE sz{ W, H };
     POINT src{ 0, 0 };
     BLENDFUNCTION bf{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-    UpdateLayeredWindow(wnd, screen, nullptr, &sz, mem, &src, 0, &bf, ULW_ALPHA);
+    bool updated = UpdateLayeredWindow(wnd, screen, nullptr, &sz, mem, &src, 0, &bf, ULW_ALPHA) != FALSE;
+    if (updated) size = { W, H };
     SelectObject(mem, ob);
     DeleteObject(bmp);
     DeleteDC(mem);
     ReleaseDC(nullptr, screen);
+    return updated;
 }
 
 void Paint() {
     if (!g_wnd) return;
-    PaintStrip(g_wnd, g_taskbar, g_hover, g_size);
+    RECT client{};
+    g_painted = PaintStrip(g_wnd, g_taskbar, g_hover, g_size);
+    if (g_painted && GetClientRect(g_taskbar, &client)) {
+        g_paintedBarClient = { client.right - client.left, client.bottom - client.top };
+    } else {
+        g_size = {};
+        g_paintedBarClient = {};
+    }
     g_lastW = -1;  // force a re-position with the new size
 }
 
 void PaintMirror(Mirror& m) {
     g_dpiBar = m.bar;
     m.dpi = Dpi();
-    PaintStrip(m.wnd, m.bar, m.hover, m.size);
+    m.painted = PaintStrip(m.wnd, m.bar, m.hover, m.size);
+    if (!m.painted) m.size = {};
     g_dpiBar = nullptr;
     m.lastLeft = INT_MIN;  // force a re-position with the new size
 }
@@ -614,13 +639,24 @@ void HideMirror(Mirror& m) {
     m.lastLeft = INT_MIN;
 }
 
+// The window's own visible flag (IsWindowVisible() is also false while the taskbar itself is hidden).
+bool Shown(HWND w) { return (GetWindowLongW(w, GWL_STYLE) & WS_VISIBLE) != 0; }
+
 // Places a mirror left of its taskbar's clock (and left of the Widgets button if present), or hides it
 // when that spot is unknown or taken by task buttons: never guess and cover something.
 void PositionMirror(Mirror& m) {
     RECT bar{};
     if (!GetWindowRect(m.bar, &bar) || (GetWindowLongW(m.bar, GWL_EXSTYLE) & WS_EX_LAYOUTRTL)) { HideMirror(m); return; }
     g_dpiBar = m.bar;
-    if (Dpi() != m.dpi || m.size.cy != bar.bottom - bar.top) PaintMirror(m), g_dpiBar = m.bar;
+    if (!m.painted || Dpi() != m.dpi || m.size.cx <= 0 || m.size.cy != bar.bottom - bar.top) {
+        PaintMirror(m);
+        g_dpiBar = m.bar;
+    }
+    if (!m.painted || m.size.cx <= 0 || m.size.cy <= 0) {
+        g_dpiBar = nullptr;
+        HideMirror(m);
+        return;
+    }
     int right = 0, minLeft = bar.left;
     bool known = false;
     // StartAllBack can put a full notification area on each secondary taskbar.
@@ -668,7 +704,7 @@ void PositionMirror(Mirror& m) {
     POINT p{ left, bar.top };
     ScreenToClient(m.bar, &p);
     bool covered = GetWindow(m.wnd, GW_HWNDPREV) != nullptr;
-    if (!covered && p.x == m.lastLeft) return;
+    if (!covered && Shown(m.wnd) && p.x == m.lastLeft) return;
     m.lastLeft = p.x;
     SetWindowPos(m.wnd, HWND_TOP, p.x, 0, m.size.cx, m.size.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
@@ -892,8 +928,7 @@ bool Create(HINSTANCE inst, HWND notifyWnd, UINT clickMsg, bool lightTheme) {
     g_lastDpi = Dpi();
     Paint();
     g_lastW = -1;
-    Reposition();
-    if (!g_primaryHidden) ShowWindow(g_wnd, SW_SHOWNOACTIVATE);  // hidden when only another monitor is chosen
+    Reposition();  // shows the strip once it is drawn and placed; it stays hidden until then
     return true;
 }
 
@@ -914,6 +949,9 @@ void Destroy() {
     if (g_wnd) { DestroyWindow(g_wnd); g_wnd = nullptr; }
     g_taskbar = nullptr;
     g_hover = false;
+    g_painted = false;
+    g_size = {};
+    g_paintedBarClient = {};
 }
 
 bool Alive() { return g_wnd && IsWindow(g_wnd) && g_taskbar && IsWindow(g_taskbar); }
@@ -970,23 +1008,29 @@ bool Reposition() {
     if (!Alive()) return false;
     SyncMirrors();
     if (g_primaryHidden) return true;  // only another monitor's taskbar shows the strip
-    if (Dpi() != g_lastDpi) { g_lastDpi = Dpi(); Paint(); }
-    HWND tray = FindWindowExW(g_taskbar, nullptr, L"TrayNotifyWnd", nullptr);
-    if (!tray) return true;
-    RECT tr, bar;
-    GetWindowRect(tray, &tr);
-    GetWindowRect(g_taskbar, &bar);
+    RECT bar{}, client{};
+    if (!GetWindowRect(g_taskbar, &bar) || !GetClientRect(g_taskbar, &client)) return true;
+    int clientW = client.right - client.left, clientH = client.bottom - client.top;
+    if (clientW <= 0 || clientH <= 0) return true;  // taskbar not laid out yet
     // The taskbar can be moved between a horizontal and a vertical edge while the app runs.
     bool vertical = bar.bottom - bar.top > bar.right - bar.left;
-    if (vertical != g_vertical) {
+    int dpi = Dpi();
+    if (!g_painted || g_size.cx <= 0 || g_size.cy <= 0 || dpi != g_lastDpi || vertical != g_vertical ||
+        g_paintedBarClient.cx != clientW || g_paintedBarClient.cy != clientH) {
+        g_lastDpi = dpi;
         g_vertical = vertical;
         Paint();
     }
+    if (!g_painted || g_size.cx <= 0 || g_size.cy <= 0) return true;
+    HWND tray = FindWindowExW(g_taskbar, nullptr, L"TrayNotifyWnd", nullptr);
+    RECT tr{};
+    if (!tray || !GetWindowRect(tray, &tr)) return true;
+    if (tr.right <= tr.left || tr.bottom <= tr.top) return true;
+    if (tr.right <= bar.left || tr.left >= bar.right || tr.bottom <= bar.top || tr.top >= bar.bottom)
+        return true;
     if (g_vertical) {
         // Left or right taskbar (PR #321): the column sits just above the notification area, centred in
         // the bar's width.
-        RECT client{};
-        GetClientRect(g_taskbar, &client);
         POINT anchor{ bar.left, tr.top };
         ScreenToClient(g_taskbar, &anchor);
         int top = anchor.y - g_size.cy - Px(2);
@@ -1006,7 +1050,8 @@ bool Reposition() {
                 MoveWindow(g_rebar, tl.x, tl.y, rr.right - rr.left, top - tl.y, TRUE);
         }
         bool covered = GetWindow(g_wnd, GW_HWNDPREV) != nullptr;
-        if (!covered && EqualRect(&tr, &g_lastTray) && EqualRect(&bar, &g_lastBar) && g_lastW == g_size.cy && g_lastLeft == top)
+        if (!covered && Shown(g_wnd) && EqualRect(&tr, &g_lastTray) && EqualRect(&bar, &g_lastBar) &&
+            g_lastW == g_size.cy && g_lastLeft == top)
             return true;
         g_lastTray = tr;
         g_lastBar = bar;
@@ -1061,8 +1106,8 @@ bool Reposition() {
 
     // Keep us above the taskbar's own content (our sibling windows).
     bool covered = GetWindow(g_wnd, GW_HWNDPREV) != nullptr;
-    if (!covered && EqualRect(&tr, &g_lastTray) && EqualRect(&bar, &g_lastBar) && EqualRect(&wb, &g_lastWidgets) &&
-        g_lastW == g_size.cx && g_lastLeft == left)
+    if (!covered && Shown(g_wnd) && EqualRect(&tr, &g_lastTray) && EqualRect(&bar, &g_lastBar) &&
+        EqualRect(&wb, &g_lastWidgets) && g_lastW == g_size.cx && g_lastLeft == left)
         return true;
     g_lastTray = tr;
     g_lastWidgets = wb;

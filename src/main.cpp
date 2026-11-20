@@ -4,15 +4,20 @@
 #include <dbt.h>
 #include <initguid.h>
 #include <hidclass.h>
+#include <bthdef.h>
+#include <bluetoothapis.h>
 
 #include <algorithm>
 #include <atomic>
 #include <climits>
+#include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <cwchar>
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "device_aliases.h"
@@ -22,6 +27,7 @@
 #include "i18n.h"
 #include "json_output.h"
 #include "labels.h"
+#include "refresh_policy.h"
 #include "report.h"
 #include "rename_dialog.h"
 #include "widget.h"
@@ -36,6 +42,10 @@ constexpr UINT WM_WIDGET_CLICK = WM_APP + 3;
 constexpr UINT_PTR TIMER_DEBOUNCE = 1;
 constexpr UINT_PTR TIMER_WIDGET = 2;
 constexpr UINT_PTR TIMER_ALERT_ICON = 3;
+constexpr UINT_PTR TIMER_RESUME = 4;
+constexpr GUID kConsoleDisplayStateGuid = {
+    0x6fe69556, 0x704a, 0x47a0, { 0x8f, 0x24, 0xc2, 0x8d, 0x93, 0x6f, 0xda, 0x47 }
+};
 // "Check battery every" choices in seconds; 60 is the default. A poll resets an awake device's sleep timer,
 // so a device only sleeps if its timer is shorter than the interval.
 constexpr DWORD POLL_SECONDS[] = { 30, 60, 120, 300, 600, 900, 1800, 3600 };
@@ -449,7 +459,15 @@ std::wstring StatusText(const TrayEntry& e) {
     return t;
 }
 
-void TrayCall(DWORD msg, UINT uid, HICON icon, const std::wstring& tip, const wchar_t* infoTitle = nullptr,
+void TraySetVersion(UINT uid) {
+    NOTIFYICONDATAW nid{ sizeof(nid) };
+    nid.hWnd = g_hwnd;
+    nid.uID = uid;
+    nid.uVersion = NOTIFYICON_VERSION_4;
+    Shell_NotifyIconW(NIM_SETVERSION, &nid);
+}
+
+bool TrayCall(DWORD msg, UINT uid, HICON icon, const std::wstring& tip, const wchar_t* infoTitle = nullptr,
               const std::wstring& info = L"") {
     NOTIFYICONDATAW nid{ sizeof(nid) };
     nid.hWnd = g_hwnd;
@@ -464,11 +482,20 @@ void TrayCall(DWORD msg, UINT uid, HICON icon, const std::wstring& tip, const wc
         CopyTip(nid.szInfo, ARRAYSIZE(nid.szInfo), info);
         nid.dwInfoFlags = NIIF_WARNING;
     }
-    Shell_NotifyIconW(msg, &nid);
-    if (msg == NIM_ADD) {
-        nid.uVersion = NOTIFYICON_VERSION_4;
-        Shell_NotifyIconW(NIM_SETVERSION, &nid);
-    }
+    bool ok = Shell_NotifyIconW(msg, &nid) != FALSE;
+    if (ok && msg == NIM_ADD) TraySetVersion(uid);
+    return ok;
+}
+
+// Adds or updates a tray icon; returns whether the shell has it. While Explorer is busy (e.g. at sign-in)
+// NIM_ADD can time out and report failure although the icon was added, and NIM_MODIFY fails for an icon
+// the shell no longer has, so each one falls back to the other.
+bool TrayShow(bool added, UINT uid, HICON icon, const std::wstring& tip, const wchar_t* infoTitle = nullptr,
+              const std::wstring& info = L"") {
+    if (TrayCall(added ? NIM_MODIFY : NIM_ADD, uid, icon, tip, infoTitle, info)) return true;
+    if (!TrayCall(added ? NIM_ADD : NIM_MODIFY, uid, icon, tip, infoTitle, info)) return false;
+    if (!added) TraySetVersion(uid);
+    return true;
 }
 
 void TrayDelete(UINT uid) {
@@ -489,10 +516,9 @@ void ShowBatteryAlert(TrayEntry& e) {
     // Windows notification balloons need a tray icon. Keep a temporary one in widget mode
     // long enough for the shell to display the notification, then remove it.
     if (!g_placeholderIcon) g_placeholderIcon = RenderIcon(L"-", -1, Foreground(), Foreground(), true);
-    TrayCall(g_alertIconAdded ? NIM_MODIFY : NIM_ADD, ALERT_ICON_ID, g_placeholderIcon,
-             L"BatteryHub", title.c_str(), message);
-    g_alertIconAdded = true;
-    SetTimer(g_hwnd, TIMER_ALERT_ICON, 60 * 1000, nullptr);
+    g_alertIconAdded =
+        TrayShow(g_alertIconAdded, ALERT_ICON_ID, g_placeholderIcon, L"BatteryHub", title.c_str(), message);
+    if (g_alertIconAdded) SetTimer(g_hwnd, TIMER_ALERT_ICON, 60 * 1000, nullptr);
 }
 
 void UpdatePlaceholder() {
@@ -504,8 +530,8 @@ void UpdatePlaceholder() {
     for (auto& [k, e] : g_entries) any |= e.added;
     if (!any && !g_placeholder) {
         if (!g_placeholderIcon) g_placeholderIcon = RenderIcon(L"-", -1, Foreground(), Foreground(), true);
-        TrayCall(NIM_ADD, PLACEHOLDER_ID, g_placeholderIcon, std::wstring(L"BatteryHub\n") + T(L"No devices with battery info found"));
-        g_placeholder = true;
+        g_placeholder = TrayShow(false, PLACEHOLDER_ID, g_placeholderIcon,
+                                 std::wstring(L"BatteryHub\n") + T(L"No devices with battery info found"));
     } else if (any && g_placeholder) {
         TrayDelete(PLACEHOLDER_ID);
         g_placeholder = false;
@@ -535,8 +561,7 @@ void ApplyEntry(TrayEntry& e) {
     }
     std::wstring tip = DisplayName(e) + L"\n" + StatusText(e);
 
-    TrayCall(e.added ? NIM_MODIFY : NIM_ADD, e.uid, e.icon, tip);
-    e.added = true;
+    e.added = TrayShow(e.added, e.uid, e.icon, tip);
 }
 
 int KindOrder(DeviceKind k) {  // default order: headset first, then mouse, ...
@@ -664,6 +689,14 @@ void Reconcile() {
         UpdateWidget();
     } else if (g_useWidget) {
         widget::Reposition();
+    } else {
+        // Retry tray icons whose NIM_ADD failed while the shell notification area was starting.
+        bool anyAdded = false;
+        for (auto& [k, e] : g_entries) {
+            if (!e.added && IsShown(e)) ApplyEntry(e);
+            anyAdded |= e.added;
+        }
+        if (anyAdded == g_placeholder) UpdatePlaceholder();
     }
 }
 
@@ -1029,21 +1062,108 @@ std::vector<DeviceStatus> DemoDevices() {
     return devices;
 }
 
+// A closer check of the next polls (see refresh_policy.h), handed to the worker for its next poll.
+SRWLOCK g_monitorLock = SRWLOCK_INIT;
+refresh_policy::Mode g_monitorRequest = refresh_policy::Mode::Idle;
+std::set<std::wstring> g_monitorKeys;
+std::set<std::wstring> g_awakeBeforeSleep;
+DWORD g_displayState = 1;  // GUID_CONSOLE_DISPLAY_STATE: 0 off, 1 on, 2 dimmed
+
+// Bluetooth connections (GUID_BLUETOOTH_HCI_EVENT) are reported only to windows that registered a
+// handle to the radio.
+struct BluetoothRadioWatch {
+    HANDLE radio = nullptr;
+    HDEVNOTIFY notify = nullptr;
+};
+std::vector<BluetoothRadioWatch> g_btRadioWatches;
+
+void ClearBluetoothRadioWatches() {
+    for (auto& w : g_btRadioWatches) {
+        if (w.notify) UnregisterDeviceNotification(w.notify);
+        if (w.radio) CloseHandle(w.radio);
+    }
+    g_btRadioWatches.clear();
+}
+
+void DropBluetoothRadioWatch(HANDLE radio) {
+    for (auto it = g_btRadioWatches.begin(); it != g_btRadioWatches.end(); ++it) {
+        if (it->radio != radio) continue;
+        if (it->notify) UnregisterDeviceNotification(it->notify);
+        if (it->radio) CloseHandle(it->radio);
+        g_btRadioWatches.erase(it);
+        return;
+    }
+}
+
+void RefreshBluetoothRadioWatches() {
+    ClearBluetoothRadioWatches();
+    if (!g_hwnd) return;
+    BLUETOOTH_FIND_RADIO_PARAMS params{ sizeof(params) };
+    HANDLE radio = nullptr;
+    HBLUETOOTH_RADIO_FIND find = BluetoothFindFirstRadio(&params, &radio);
+    if (!find) return;
+    do {
+        DEV_BROADCAST_HANDLE filter{ sizeof(filter) };
+        filter.dbch_devicetype = DBT_DEVTYP_HANDLE;
+        filter.dbch_handle = radio;
+        HDEVNOTIFY notify = RegisterDeviceNotificationW(g_hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+        if (notify) {
+            g_btRadioWatches.push_back({ radio, notify });
+        } else {
+            CloseHandle(radio);
+        }
+        radio = nullptr;
+    } while (BluetoothFindNextRadio(find, &radio));
+    BluetoothFindRadioClose(find);
+}
+
+std::set<std::wstring> AwakeDevices() {
+    std::set<std::wstring> keys;
+    for (const auto& [k, e] : g_entries)
+        if (e.st.connected && !e.st.asleep) keys.insert(k);
+    return keys;
+}
+
+std::set<std::wstring> DevicesWithLevel() {
+    std::set<std::wstring> keys;
+    for (const auto& [k, e] : g_entries)
+        if (e.st.connected && e.st.percent >= 0) keys.insert(k);
+    return keys;
+}
+
+void RequestMonitor(refresh_policy::Mode mode, std::set<std::wstring> keys) {
+    AcquireSRWLockExclusive(&g_monitorLock);
+    if (mode != refresh_policy::Mode::Arrival || g_monitorRequest != refresh_policy::Mode::Resume) {
+        g_monitorRequest = mode;
+        g_monitorKeys = std::move(keys);
+    }
+    ReleaseSRWLockExclusive(&g_monitorLock);
+}
+
 DWORD WINAPI Worker(LPVOID) {
-    // At sign-in a USB receiver may enumerate before its wireless link is ready.
-    constexpr DWORD startupPollDelays[] = { 3000, 7000, 15000 };
-    size_t startupPoll = 0;
+    refresh_policy::Monitor monitor;
+    monitor.BeginStartup();
     HANDLE events[2] = { g_stopEvt, g_refreshEvt };
     for (;;) {
+        AcquireSRWLockExclusive(&g_monitorLock);
+        refresh_policy::Mode request = std::exchange(g_monitorRequest, refresh_policy::Mode::Idle);
+        std::set<std::wstring> keys = std::move(g_monitorKeys);
+        g_monitorKeys.clear();
+        ReleaseSRWLockExclusive(&g_monitorLock);
+        if (request == refresh_policy::Mode::Resume) monitor.BeginResume(std::move(keys));
+        else if (request == refresh_policy::Mode::Arrival) monitor.BeginArrival(std::move(keys));
+
         auto* v = new std::vector<DeviceStatus>(g_demo ? DemoDevices() : PollAllDevices());
+        DWORD delay = monitor.DelayAfterPoll(*v, g_pollIntervalMs);
         if (!PostMessageW(g_hwnd, WM_RESULTS, 0, (LPARAM)v)) delete v;
-        DWORD delay = g_pollIntervalMs;
-        if (startupPoll < ARRAYSIZE(startupPollDelays)) delay = startupPollDelays[startupPoll++];
-        if (WaitForMultipleObjects(2, events, FALSE, delay) == WAIT_OBJECT_0) return 0;
+        DWORD wait = WaitForMultipleObjects(2, events, FALSE, delay);
+        if (wait == WAIT_OBJECT_0) return 0;
+        monitor.OnWaitFinished(wait == WAIT_TIMEOUT);
     }
 }
 
 void RefreshSoon(UINT ms) { SetTimer(g_hwnd, TIMER_DEBOUNCE, ms, nullptr); }
+void RefreshAfterWake(UINT ms) { SetTimer(g_hwnd, TIMER_RESUME, ms, nullptr); }
 
 LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == g_taskbarCreatedMsg && msg != 0) {  // Explorer restarted
@@ -1075,14 +1195,65 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_ENDSESSION:  // sign-out / shutdown / installer restart manager
             if (wp) DestroyWindow(h);
             return 0;
-        case WM_DEVICECHANGE:
-            if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) RefreshSoon(2500);
+        case WM_DEVICECHANGE: {
+            auto* hdr = reinterpret_cast<const DEV_BROADCAST_HDR*>(lp);
+            bool handle = hdr && hdr->dbch_devicetype == DBT_DEVTYP_HANDLE;
+            if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) {
+                if (hdr && hdr->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE) {
+                    auto* iface = reinterpret_cast<const DEV_BROADCAST_DEVICEINTERFACE_W*>(lp);
+                    if (iface->dbcc_classguid == GUID_BTHPORT_DEVICE_INTERFACE) RefreshBluetoothRadioWatches();
+                    else if (wp == DBT_DEVICEARRIVAL) RequestMonitor(refresh_policy::Mode::Arrival, DevicesWithLevel());
+                }
+                if (handle && wp == DBT_DEVICEREMOVECOMPLETE)
+                    DropBluetoothRadioWatch(reinterpret_cast<const DEV_BROADCAST_HANDLE*>(lp)->dbch_handle);
+                RefreshSoon(2500);
+            } else if (handle && (wp == DBT_DEVICEQUERYREMOVE || wp == DBT_DEVICEREMOVEPENDING)) {
+                // Let the radio go: an open handle would block its removal.
+                DropBluetoothRadioWatch(reinterpret_cast<const DEV_BROADCAST_HANDLE*>(lp)->dbch_handle);
+            } else if (handle && wp == DBT_DEVICEQUERYREMOVEFAILED) {
+                RefreshBluetoothRadioWatches();
+            } else if (handle && wp == DBT_CUSTOMEVENT) {
+                auto* bh = reinterpret_cast<const DEV_BROADCAST_HANDLE*>(lp);
+                // HCI_CONNECTION_TYPE_*: 1 classic (ACL), 2 the voice link of a call (SCO), 3 Bluetooth LE.
+                constexpr UCHAR kHciAcl = 1, kHciSco = 2;
+                BTH_HCI_EVENT_INFO info{};
+                if (bh->dbch_eventguid == GUID_BLUETOOTH_HCI_EVENT &&
+                    bh->dbch_size >= offsetof(DEV_BROADCAST_HANDLE, dbch_data) + sizeof(info)) {
+                    memcpy(&info, bh->dbch_data, sizeof(info));
+                    if (info.connectionType != kHciSco) {
+                        // A Bluetooth headset reports its level a few seconds after it connects.
+                        if (info.connected && info.connectionType == kHciAcl)
+                            RequestMonitor(refresh_policy::Mode::Arrival, DevicesWithLevel());
+                        RefreshSoon(2500);
+                    }
+                }
+            }
             return TRUE;
+        }
         case WM_POWERBROADCAST:
-            if (wp == PBT_APMRESUMEAUTOMATIC) RefreshSoon(5000);
+            if (wp == PBT_APMSUSPEND) {
+                g_awakeBeforeSleep = AwakeDevices();
+            } else if (wp == PBT_APMRESUMEAUTOMATIC) {
+                RefreshAfterWake(5000);
+            } else if (wp == PBT_POWERSETTINGCHANGE && lp) {
+                // Modern Standby may not report a suspend / resume: the display turning off and on stands in.
+                auto* ps = reinterpret_cast<const POWERBROADCAST_SETTING*>(lp);
+                if (ps->PowerSetting == kConsoleDisplayStateGuid && ps->DataLength >= sizeof(DWORD)) {
+                    DWORD state = *reinterpret_cast<const DWORD*>(ps->Data);
+                    if (g_displayState != 0 && state == 0) g_awakeBeforeSleep = AwakeDevices();
+                    else if (g_displayState == 0 && state != 0) RefreshAfterWake(3000);
+                    g_displayState = state;
+                }
+            }
             return TRUE;
         case WM_TIMER:
             if (wp == TIMER_DEBOUNCE) { KillTimer(h, TIMER_DEBOUNCE); SetEvent(g_refreshEvt); }
+            if (wp == TIMER_RESUME) {
+                KillTimer(h, TIMER_RESUME);
+                RequestMonitor(refresh_policy::Mode::Resume, std::move(g_awakeBeforeSleep));
+                g_awakeBeforeSleep.clear();
+                SetEvent(g_refreshEvt);
+            }
             if (wp == TIMER_WIDGET) { Reconcile(); updates::Tick(h); }
             if (wp == TIMER_ALERT_ICON) {
                 KillTimer(h, TIMER_ALERT_ICON);
@@ -1097,6 +1268,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_DESTROY:
             updates::Shutdown();
+            KillTimer(h, TIMER_DEBOUNCE);
+            KillTimer(h, TIMER_RESUME);
             KillTimer(h, TIMER_WIDGET);
             KillTimer(h, TIMER_ALERT_ICON);
             if (g_alertIconAdded) { TrayDelete(ALERT_ICON_ID); g_alertIconAdded = false; }
@@ -1259,6 +1432,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
     filter.dbcc_classguid = GUID_DEVINTERFACE_HID;
     HDEVNOTIFY notify = RegisterDeviceNotificationW(g_hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+    // Bluetooth radios coming and going, and the connections on each one.
+    filter.dbcc_classguid = GUID_BTHPORT_DEVICE_INTERFACE;
+    HDEVNOTIFY radioNotify = RegisterDeviceNotificationW(g_hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+    RefreshBluetoothRadioWatches();
+    HPOWERNOTIFY displayNotify =
+        RegisterPowerSettingNotification(g_hwnd, &kConsoleDisplayStateGuid, DEVICE_NOTIFY_WINDOW_HANDLE);
 
     g_refreshEvt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     g_stopEvt = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -1294,6 +1473,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     // drain results posted after shutdown started
     while (PeekMessageW(&m, nullptr, WM_RESULTS, WM_RESULTS, PM_REMOVE)) delete reinterpret_cast<std::vector<DeviceStatus>*>(m.lParam);
     if (notify) UnregisterDeviceNotification(notify);
+    if (radioNotify) UnregisterDeviceNotification(radioNotify);
+    ClearBluetoothRadioWatches();
+    if (displayNotify) UnregisterPowerSettingNotification(displayNotify);
     if (g_worker) CloseHandle(g_worker);
     ReleaseMutex(mutex);
     return 0;
