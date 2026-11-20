@@ -25,6 +25,7 @@ struct RingTween {
     double to = 0.0;
     ULONGLONG started = 0;
     bool active = false;
+    bool hasValue = true;
 };
 std::map<std::wstring, RingTween> g_ringTweens;
 constexpr UINT_PTR kRingAnimationTimer = 4;
@@ -361,6 +362,7 @@ double RingProgress(const WidgetItem& item) {
     auto it = g_ringTweens.find(item.key);
     if (it == g_ringTweens.end()) return ring_geometry::ClampPercent(item.percent);
     const RingTween& tween = it->second;
+    if (!tween.hasValue) return -1.0;
     if (!tween.active) return tween.to;
     double t = (GetTickCount64() - tween.started) / 420.0;
     return ring_geometry::Interpolate(tween.from, tween.to, t);
@@ -1105,11 +1107,17 @@ void SetItems(const std::vector<WidgetItem>& items, const std::wstring& tooltip)
     for (const auto& item : items) {
         if (item.key.empty()) continue;
         live[item.key] = true;
-        if (item.percent < 0 || !item.connected) continue;
-        const double target = ring_geometry::ClampPercent(item.percent);
         auto it = g_ringTweens.find(item.key);
-        if (it == g_ringTweens.end()) {
-            g_ringTweens[item.key] = { target, target, now, false };
+        if (item.percent < 0 || !item.connected) {
+            if (it != g_ringTweens.end()) {
+                it->second.active = false;
+                it->second.hasValue = false;
+            }
+            continue;
+        }
+        const double target = ring_geometry::ClampPercent(item.percent);
+        if (it == g_ringTweens.end() || !it->second.hasValue) {
+            g_ringTweens[item.key] = { target, target, now, false, true };
         } else {
             RingTween& tween = it->second;
             double current = tween.active
