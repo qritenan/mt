@@ -261,6 +261,8 @@ The installer adds a Start menu entry and an uninstaller (*Settings → Apps*), 
 when you sign in. Prefer no installer? Download `BatteryHub-<version>-portable.zip`, unzip it
 anywhere and run `BatteryHub.exe`.
 
+See the [code signing policy](#code-signing-policy) and the [privacy policy](PRIVACY.md).
+
 **Notes:**
 - **SmartScreen warning:** the exe is not code-signed, so Windows may say "Windows protected your PC". Click *More info → Run anyway*, or build it yourself.
 - **Tray-icon mode on Windows 11:** new tray icons go to the `^` overflow. Drag them onto the taskbar or enable them in *Settings → Personalization → Taskbar → Other system tray icons*.
@@ -510,6 +512,20 @@ The protocols come from these projects' research:
 - [MouseDock](https://github.com/late-autumn-gif/mousedock) (MIT) and [BrimDeck](https://github.com/MoFeng2223/BrimDeck): Scyrox V12M profile read
 - JBL QuantumENGINE: HIDV1 connection and battery reports for the Quantum 350, and HIDV3 device-info messages for newer Quantum headsets
 - [jbl-quantum-linux](https://github.com/Tymon3310/jbl-quantum-linux/blob/main/docs/QUANTUM610_PACKETS.md): JBL Quantum 610 HIDV1 battery and link reports, and the Quantum lineup (360 as a HIDV1 dongle model)
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+Windows releases are built from this repository by GitHub Actions ([`.github/workflows/build.yml`](.github/workflows/build.yml))
+and signed only after a person approves the signing request. Builds of forks and of unreviewed changes are never signed.
+
+**Team roles**
+- **Committers and reviewers:** [@krisgfx9](https://github.com/krisgfx9) and [@DuBistMutig](https://github.com/DuBistMutig), the code owners in [`.github/CODEOWNERS`](.github/CODEOWNERS). Every pull request from other contributors is reviewed by one of them before it is merged; changes to the build, installer and release scripts need the owner's review.
+- **Approvers:** [@krisgfx9](https://github.com/krisgfx9), the project owner, approves each release before it is signed.
+
+**Privacy:** this program only connects to other systems as described in the [privacy policy](PRIVACY.md): an update check
+that can be turned off, and downloads or requests that the user starts.
 
 ## License
 
